@@ -1,0 +1,6 @@
+{
+  "name":"appweave-frontend","private":true,"version":"0.1.0","type":"module",
+  "scripts":{"dev":"vite","build":"tsc -b && vite build","test":"vitest run"},
+  "dependencies":{"@vitejs/plugin-react":"latest","lucide-react":"^0.468.0","react":"latest","react-dom":"latest","vite":"latest"},
+  "devDependencies":{"@types/react":"latest","@types/react-dom":"latest","typescript":"latest","vitest":"latest"}
+}
