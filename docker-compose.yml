@@ -1,0 +1,23 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    environment:
+      NODE_ENV: production
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      DATA_FILE: /data/appweave.json
+    volumes:
+      - appweave-data:/data
+    ports:
+      - "3000:3000"
+  dashboard:
+    build:
+      context: frontend
+      dockerfile: Dockerfile
+    ports:
+      - "8080:80"
+    depends_on:
+      - api
+volumes:
+  appweave-data:
