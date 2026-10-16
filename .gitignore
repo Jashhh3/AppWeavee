@@ -12,3 +12,6 @@
 # Local tooling and OS files
 .DS_Store
 coverage/
+
+# Local OmniRush workspace metadata
+.opencode/
