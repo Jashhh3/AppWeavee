@@ -15,13 +15,26 @@ No database or provider credentials are required for local development or the of
 From the repository root:
 
 ```sh
-cp .env.example .env
+cp backend/.env.example backend/.env
+cp frontend/.env.example frontend/.env.local
 (cd backend && npm ci)
 (cd frontend && npm ci)
 (cd sdk && npm ci)
 ```
 
-Use `backend/.env.example` for backend process settings and `frontend/.env.example` for Vite settings. `.env.example` files contain placeholders only.
+Open `backend/.env` and replace the placeholder `JWT_SECRET` with a randomly generated server-only value. For example, in a Linux/macOS terminal:
+
+```sh
+openssl rand -hex 32
+```
+
+On PowerShell, use Node.js:
+
+```powershell
+node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+```
+
+Paste the result into `backend/.env` as `JWT_SECRET=...`. Do not put this value in `frontend/.env.local`, browser code, screenshots, or Git. The backend now loads `backend/.env` automatically; Vite loads `frontend/.env.local` automatically. `.env.example` files contain placeholders only.
 
 ## Run locally
 
