@@ -1,1 +1,1 @@
-{"name":"@appweave/sdk","version":"0.1.0","private":true,"type":"module","scripts":{"build":"tsc -p tsconfig.json"},"devDependencies":{"typescript":"^5.5.4"}}
+{"name":"@appweave/sdk","version":"0.1.0","private":true,"type":"module","scripts":{"build":"node node_modules/typescript/bin/tsc -p tsconfig.json"},"devDependencies":{"typescript":"^5.5.4"}}

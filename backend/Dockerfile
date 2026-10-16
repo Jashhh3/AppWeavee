@@ -1,10 +1,9 @@
-FROM node:20-bookworm-slim
+FROM node:20.15.1-bookworm-slim
 WORKDIR /app
-COPY package.json package-lock.json ./
+COPY backend/package.json backend/package-lock.json ./
 RUN npm ci
-COPY tsconfig.json .nvmrc .env.example ./
-COPY src ./src
-COPY tests ./tests
+COPY backend/tsconfig.json ./
+COPY backend/src ./src
 RUN npm run build
 EXPOSE 3000
-CMD ["npm","start"]
+CMD ["npm", "start"]

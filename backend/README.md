@@ -13,10 +13,12 @@ npm run build
 npm start
 ```
 
-Run the complete offline check with `npm test` (or `npm run typecheck`). Docker builds and runs the same service with `docker build -t appweave-backend . && docker run --rm -p 3000:3000 appweave-backend`.
+Run the complete offline check with `npm test` (or `npm run typecheck`). Docker builds and runs the same service with `docker build -f backend/Dockerfile -t appweave-backend . && docker run --rm -p 3000:3000 appweave-backend`.
 
 ## API
 
-`GET /health` is unauthenticated. SDK routes are under `/api/v1`: register/login, owned project listing and creation, project-scoped Product CRUD, specification versions, preview/production deployment metadata, snapshots and rollback, audit logs, and an authenticated safe AI stub. Send `Authorization: Bearer <token>`. All errors use `{error:{code,message,requestId}}`; rate limiting and configurable CORS origin checks are enabled.
+`GET /health` is unauthenticated. SDK routes are under `/api/v1`: register/login, owned project listing and creation, project-scoped Product CRUD, specification versions, preview/production deployment metadata, Git-backed project versions (snapshots), changed-file comparison, validated rollback, audit logs, and an authenticated safe AI stub. Send `Authorization: Bearer <token>`. All errors use `{error:{code,message,requestId}}`; rate limiting and configurable CORS origin checks are enabled.
+
+Project versions are stored in server-owned repositories below `PROJECT_WORKSPACE_ROOT` (one repository per project); only generated project specification state is committed, never backend source. If Git is unavailable, version metadata and file content remain usable through the JSON store fallback. Rollback validates the target before creating a new version and does not rewind products or other application records.
 
 The file-backed store is intentionally dependency-free and persists at `DATA_FILE`. It provides atomic-in-process writes and ownership checks on every project-scoped route. It is not intended as a horizontally concurrent production database.

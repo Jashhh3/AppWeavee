@@ -1,46 +1,91 @@
 # AppWeave
 
-AppWeave is a self-contained AI application builder and managed backend foundation. The initial vertical slice provides account authentication, owned projects, project-scoped Product CRUD, validated application specifications, internal snapshots, preview/production deployment records, audit logs, and a responsive dashboard. No GitHub account is required.
-
-## What is implemented
-
-- **Private backend engine:** Fastify/TypeScript service owns storage, authorization, migrations/specifications, and secrets. The frontend receives only public project configuration.
-- **Tenant isolation:** every protected project route checks the authenticated owner; cross-project reads and writes return `404`.
-- **Persistence:** offline file-backed store for reproducible local development and tests. Replace the `Store` adapter with PostgreSQL for concurrent production deployments; the API boundary remains stable.
-- **AI workflow:** server-side provider abstraction with a safe no-network stub until a provider key is configured. Generated output is treated as review data and is not executed.
-- **Internal versions:** snapshots are project-scoped and rollback restores application specification state without deleting customer records.
-- **Dashboard:** real login/register, live overview metrics, project creation/listing, schema/data explorer, AI proposal review, and operational navigation with explicit not-yet-connected states.
-- **SDK:** `sdk/` provides a documented TypeScript client using a public client identifier and bearer sessions.
+AppWeave is a self-contained AI application builder with a Fastify/TypeScript API, React dashboard, offline JSON persistence, and a TypeScript SDK.
 
 ## Requirements
 
-Node.js 20 (pinned in `.nvmrc`) and npm. Docker Compose is optional. No external database or provider credentials are required for the offline check.
+- Node.js **20.15.1**, pinned in `.nvmrc`
+- npm and GNU Make
+- Docker Engine with Docker Compose v2 for containers
 
-## Run locally
+No database or provider credentials are required for local development or the offline checks.
+
+## Setup
+
+From the repository root:
 
 ```sh
 cp .env.example .env
-cd backend && npm ci && npm test && npm run typecheck && npm run build
-JWT_SECRET=local-development-secret npm start
-
-# in another terminal
-cd frontend && npm ci && printf 'VITE_API_URL=http://localhost:3000\n' > .env.local && npm run dev
+(cd backend && npm ci)
+(cd frontend && npm ci)
+(cd sdk && npm ci)
 ```
 
-Open the Vite URL, create an account, create a project, and use the dashboard. The backend API is at `http://localhost:3000`; health is `GET /health`.
+Use `backend/.env.example` for backend process settings and `frontend/.env.example` for Vite settings. `.env.example` files contain placeholders only.
 
-## Single test command
+## Run locally
 
-`make test` runs backend integration tests, backend typechecking, and the frontend smoke test completely offline using the committed lockfiles and local npm caches. `make build` builds both applications.
+Start the API:
 
-## Docker
+```sh
+cd backend
+npm run build
+npm start
+```
 
-`docker compose up --build` starts the API on port 3000 and dashboard on port 8080. Set a strong `JWT_SECRET` in the environment for any shared deployment. The local JSON store is mounted in the `appweave-data` volume.
+In a second terminal, start the dashboard:
 
-## Backup and restore
+```sh
+cd frontend
+npm run dev
+```
 
-For the local adapter, stop the API, copy the mounted `DATA_FILE` to a protected backup location, and restore it before starting the service again. Production PostgreSQL deployments should use encrypted scheduled snapshots and a tested point-in-time restore procedure; this remains an infrastructure setup step rather than a browser feature.
+Open `http://localhost:5173`. The API health endpoint is `http://localhost:3000/health`.
 
-## Deliberate gaps
+## Test and build
 
-PostgreSQL provisioning, encrypted BYOK persistence, real external model adapters, hosted preview build workers, atomic frontend deployment, and custom domains are interfaces/records in this first version, not claimed as operational. They must be added behind the same authorization and versioning boundaries before production launch.
+Run the single offline validation command:
+
+```sh
+make test
+```
+
+This uses each committed npm lockfile with `npm ci --offline`, runs backend tests and typechecking, the frontend smoke test, and the SDK build. Install dependencies once with network access during setup before running offline checks.
+
+Build all workspaces with:
+
+```sh
+make build
+```
+
+## Docker Compose
+
+Build and run the API and dashboard:
+
+```sh
+docker compose up --build
+```
+
+The API is at `http://localhost:3000`; the dashboard is at `http://localhost:8080`. Set a strong `JWT_SECRET` in `.env` for shared environments. Stop the stack with `docker compose down`.
+
+The API JSON store is mounted in the named `appweave-data` volume. Remove local data with `docker compose down -v`.
+
+## Deploy
+
+On a host with Docker Engine and Compose v2, copy the repository and `.env.example` to `.env`, set `JWT_SECRET`, then run:
+
+```sh
+docker compose build
+docker compose up -d
+docker compose ps
+curl http://localhost:3000/health
+```
+
+Use the host's TLS reverse proxy and network policy for externally exposed deployments.
+
+## Workspace layout
+
+- `backend/`: Fastify API, authorization, persistence, and tests
+- `frontend/`: React + TypeScript + Vite dashboard
+- `sdk/`: documented TypeScript client
+- `docker-compose.yml`: API and dashboard services
