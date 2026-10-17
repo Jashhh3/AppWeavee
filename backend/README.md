@@ -8,7 +8,7 @@ Requires Node 20 (`.nvmrc`). From this directory:
 
 ```sh
 npm ci
-cp .env.example .env   # set long random JWT_SECRET and AI_ENCRYPTION_KEY values
+cp .env.example .env   # optional for non-Docker runs; Docker generates persistent secrets automatically
 npm run build
 npm start
 ```

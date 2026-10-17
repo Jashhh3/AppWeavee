@@ -10,33 +10,33 @@ AppWeave is a self-contained AI application builder with a Fastify/TypeScript AP
 
 No database or provider credentials are required for local development or the offline checks.
 
-## Automatic local secret setup
+## Automatic Docker setup
 
-Use the startup script instead of manually creating JWT or AI encryption secrets. It creates `.env` on the first run and preserves both secrets on every later run. The file is ignored by Git.
-
-PowerShell:
+Docker performs the complete first-run setup. The API container generates `JWT_SECRET` and `AI_ENCRYPTION_KEY` on first startup and stores them in the persistent `appweave-data` volume. Later restarts reuse the same secrets automatically. No host `.env` file is required for local Docker use.
 
 ```powershell
-.\scripts\start.ps1
+docker compose up --build -d
 ```
 
-Linux/macOS:
+Dashboard: `http://localhost:8080`
+API health: `http://localhost:3000/health`
 
-```sh
-./scripts/start.sh
-```
-
-For environment setup without starting Docker:
+To inspect services:
 
 ```powershell
-.\scripts\bootstrap-env.ps1
+docker compose ps
+docker compose logs api
 ```
 
-```sh
-./scripts/bootstrap-env.sh
+To stop without deleting data:
+
+```powershell
+docker compose down
 ```
 
-Never use `--force`-style secret regeneration for an existing installation. Changing `AI_ENCRYPTION_KEY` makes previously encrypted provider keys unreadable; if it is lost, re-enter provider keys after generating a replacement.
+`docker compose down -v` deletes the volume, users, projects, provider configuration, and generated data. Use it only for a deliberate clean reset.
+
+For non-Docker development, the optional `scripts/bootstrap-env.ps1` and `scripts/bootstrap-env.sh` helpers still create a local `.env`.
 
 ## Setup
 

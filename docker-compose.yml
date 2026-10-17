@@ -5,8 +5,6 @@ services:
       dockerfile: backend/Dockerfile
     environment:
       NODE_ENV: production
-      JWT_SECRET: ${JWT_SECRET:?Run scripts/bootstrap-env.ps1 or scripts/bootstrap-env.sh first}
-      AI_ENCRYPTION_KEY: ${AI_ENCRYPTION_KEY:?Run scripts/bootstrap-env.ps1 or scripts/bootstrap-env.sh first}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:8080,http://127.0.0.1:8080}
       DATA_FILE: /data/appweave.json
     volumes:
