@@ -16,3 +16,13 @@ describe('AI provider error mapping', () => {
     await expect(provider(async () => { throw error; }).generate('prompt')).rejects.toMatchObject({ code: 'PROVIDER_TIMEOUT', statusCode: 504 });
   });
 });
+
+
+describe('OpenAI-compatible response normalization', () => {
+  it('reads content arrays and reasoning fallbacks', async () => {
+    const arrayProvider = provider(async () => new Response(JSON.stringify({ choices: [{ message: { content: [{ type: 'text', text: '{\"ok\":true}' }] } }] }), { status: 200 }) as Response);
+    await expect(arrayProvider.generate('prompt')).resolves.toMatchObject({ output: '{"ok":true}' });
+    const reasoningProvider = provider(async () => new Response(JSON.stringify({ choices: [{ message: { content: '', reasoning: '{\"repaired\":true}' } }] }), { status: 200 }) as Response);
+    await expect(reasoningProvider.generate('prompt')).resolves.toMatchObject({ output: '{"repaired":true}' });
+  });
+});
