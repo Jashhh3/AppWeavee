@@ -62,7 +62,7 @@ On PowerShell, use Node.js:
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 ```
 
-Paste the result into `backend/.env` as `JWT_SECRET=...`. Do not put this value in `frontend/.env.local`, browser code, screenshots, or Git. The backend now loads `backend/.env` automatically; Vite loads `frontend/.env.local` automatically. `.env.example` files contain placeholders only.
+Paste the result into `backend/.env` as `JWT_SECRET=...`. Do not put this value in `frontend/.env.local`, browser code, screenshots, or Git. Set `AI_PROVIDER_TIMEOUT_MS` to change the provider request timeout in milliseconds (defaults safely to `120000`). The backend now loads `backend/.env` automatically; Vite loads `frontend/.env.local` automatically. `.env.example` files contain placeholders only.
 
 ## Run locally
 
@@ -122,7 +122,7 @@ docker compose ps
 curl http://localhost:3000/health
 ```
 
-Use the host's TLS reverse proxy and network policy for externally exposed deployments.
+Use the host's TLS reverse proxy and network policy for externally exposed deployments. Set `AI_PROVIDER_TIMEOUT_MS` in `.env` when provider requests need a different bounded timeout (default: `120000` ms).
 
 ## Gemini model configuration
 
