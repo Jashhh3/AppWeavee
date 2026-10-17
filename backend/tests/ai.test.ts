@@ -1,0 +1,18 @@
+import { describe, expect, it } from 'vitest';
+import { HttpAIProvider } from '../src/ai.js';
+import type { AIProviderConfig } from '../src/types.js';
+
+const config: AIProviderConfig = { id: 'id', projectId: 'project', provider: 'openai', baseUrl: 'https://provider.example/v1', model: 'model', keyConfigured: true, keyCiphertext: 'cipher', updatedAt: new Date().toISOString() };
+const provider = (fetcher: typeof fetch) => new HttpAIProvider('openai', config, 'secret-key', fetcher);
+
+describe('AI provider error mapping', () => {
+  it.each([[404, 'PROVIDER_MODEL_NOT_FOUND', 404], [401, 'PROVIDER_UNAUTHORIZED', 401], [429, 'PROVIDER_RATE_LIMITED', 429]] as const)('maps HTTP %s safely', async (status, code, statusCode) => {
+    await expect(provider(async () => new Response(JSON.stringify({ error: { message: 'token=should-not-leak' } }), { status }) as Response).generate('prompt')).rejects.toMatchObject({ code, statusCode });
+    await expect(provider(async () => new Response(JSON.stringify({ error: { message: 'token=should-not-leak' } }), { status }) as Response).generate('prompt')).rejects.not.toThrow('should-not-leak');
+  });
+
+  it('maps aborts to a timeout without exposing credentials', async () => {
+    const error = Object.assign(new Error('aborted'), { name: 'AbortError' });
+    await expect(provider(async () => { throw error; }).generate('prompt')).rejects.toMatchObject({ code: 'PROVIDER_TIMEOUT', statusCode: 504 });
+  });
+});

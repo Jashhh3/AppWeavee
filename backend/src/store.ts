@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { DB } from './types.js';
 
-const empty = (): DB => ({ users: [], projects: [], projectSettings: [], providerConfigs: [], products: [], audits: [], specs: [], deployments: [], snapshots: [], projectMemory: [], decisions: [], buildHistory: [], graphNodes: [], graphEdges: [] });
+const empty = (): DB => ({ users: [], userPreferences: [], projects: [], projectSettings: [], providerConfigs: [], products: [], audits: [], specs: [], deployments: [], snapshots: [], projectMemory: [], decisions: [], buildHistory: [], graphNodes: [], graphEdges: [] });
 export class Store {
   private db: DB = empty();
   private writeQueue: Promise<void> = Promise.resolve();

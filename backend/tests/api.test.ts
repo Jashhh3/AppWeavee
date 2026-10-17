@@ -18,6 +18,28 @@ describe('AppWeave API', () => {
     expect((await app.inject({ method: 'GET', url: `/api/v1/projects/${id}`, headers: { authorization: `Bearer ${b}` } })).statusCode).toBe(404);
     const unauth = await app.inject({ method: 'GET', url: '/api/v1/projects' }); expect(unauth.statusCode).toBe(401);
   });
+  it('supports HttpOnly cookie sessions, refresh-style me, logout, and isolated preferences', async () => {
+    const first = await app.inject({ method: 'POST', url: '/api/v1/auth/register', payload: { email: 'cookie-a@example.com', password: 'correct horse battery staple' } });
+    expect(first.statusCode).toBe(201);
+    const setCookie = first.headers['set-cookie'];
+    expect(String(setCookie)).toMatch(/^appweave_session=.*;.*HttpOnly/);
+    const login = await app.inject({ method: 'POST', url: '/api/v1/auth/login', payload: { email: 'cookie-a@example.com', password: 'correct horse battery staple' } });
+    expect(login.statusCode).toBe(200);
+    const cookieHeader = login.headers['set-cookie'];
+    const cookie = Array.isArray(cookieHeader) ? cookieHeader[0].split(';')[0] : String(cookieHeader).split(';')[0];
+    const me = await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: { cookie } });
+    expect(me.statusCode).toBe(200); expect(me.json().user.email).toBe('cookie-a@example.com');
+    const project = await app.inject({ method: 'POST', url: '/api/v1/projects', headers: { cookie }, payload: { name: 'Preferred' } });
+    const saved = await app.inject({ method: 'PATCH', url: '/api/v1/me/preferences', headers: { cookie }, payload: { selectedProjectId: project.json().id, selectedProvider: 'openai', selectedModel: 'gpt-4o-mini' } });
+    expect(saved.statusCode).toBe(200); expect(saved.json().preferences.selectedProjectId).toBe(project.json().id);
+    const second = await app.inject({ method: 'POST', url: '/api/v1/auth/register', payload: { email: 'cookie-b@example.com', password: 'correct horse battery staple' } });
+    const secondCookie = (Array.isArray(second.headers['set-cookie']) ? second.headers['set-cookie'][0] : String(second.headers['set-cookie'])).split(';')[0];
+    expect((await app.inject({ method: 'GET', url: '/api/v1/me/preferences', headers: { cookie: secondCookie } })).json().preferences.selectedProjectId).toBeNull();
+    const logout = await app.inject({ method: 'POST', url: '/api/v1/auth/logout', headers: { cookie } });
+    expect(logout.statusCode).toBe(200); expect(String(logout.headers['set-cookie'])).toMatch(/^appweave_session=;/);
+    expect((await app.inject({ method: 'GET', url: '/api/v1/auth/me' })).statusCode).toBe(401);
+  });
+
   it('validates and performs Product CRUD plus snapshot rollback', async () => {
     const auth = { authorization: `Bearer ${await register('owner@example.com')}` };
     const p = await app.inject({ method: 'POST', url: '/api/v1/projects', headers: auth, payload: { name: 'Catalog' } }); const id = p.json().id;

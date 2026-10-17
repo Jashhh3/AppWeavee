@@ -79,7 +79,7 @@ Build and run the API and dashboard:
 docker compose up --build
 ```
 
-The API is at `http://localhost:3000`; the dashboard is at `http://localhost:8080`. Set a strong `JWT_SECRET` in `.env` for shared environments. Stop the stack with `docker compose down`.
+The API is at `http://localhost:3000`; the dashboard is at `http://localhost:8080`. Set strong `JWT_SECRET` and `AI_ENCRYPTION_KEY` values in `.env` for shared environments. The compose setup allows the dashboard origins on port 8080. Stop the stack with `docker compose down`.
 
 The API JSON store is mounted in the named `appweave-data` volume. Remove local data with `docker compose down -v`.
 

@@ -1,11 +1,12 @@
 import 'dotenv/config';
 import Fastify, { type FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
+import cookie from '@fastify/cookie';
 import rateLimit from '@fastify/rate-limit';
 import { z, ZodError } from 'zod';
 import { Store } from './store.js';
 import { hash, verify, token, userId, ownedProject } from './auth.js';
-import type { Project, Product, Deployment } from './types.js';
+import type { Project, Product, Deployment, UserPreferences } from './types.js';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -24,8 +25,11 @@ const settingsInput = z.object({ name: z.string().trim().min(1).max(200).optiona
 const providerParam = z.object({ provider: z.enum(['gemini', 'openai', 'openrouter']) });
 const providerInput = z.object({ baseUrl: z.string().url().max(2048), model: z.string().trim().min(1).max(200), key: z.string().min(1).max(4096).optional(), apiKey: z.string().min(1).max(4096).optional() }).strict().refine(input => Boolean(input.key ?? input.apiKey), { message: 'A provider key is required', path: ['key'] });
 const providerDefaults: Record<AIProviderName, { baseUrl: string; model: string }> = { gemini: { baseUrl: 'https://generativelanguage.googleapis.com', model: 'gemini-flash-latest' }, openai: { baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' }, openrouter: { baseUrl: 'https://openrouter.ai/api/v1', model: 'openai/gpt-4o-mini' } };
+const preferencesInput = z.object({ selectedProjectId: z.string().uuid().nullable().optional(), selectedProvider: z.enum(['gemini', 'openai', 'openrouter']).nullable().optional(), selectedModel: z.string().trim().min(1).max(200).nullable().optional() }).strict();
 const providerView = (c: AIProviderConfig) => ({ provider: c.provider, baseUrl: c.baseUrl, model: c.model, configured: Boolean(c.keyConfigured && c.keyCiphertext), key: c.keyConfigured && c.keyCiphertext ? `••••••••${c.keyLast4 ?? ''}` : null, updatedAt: c.updatedAt });
 const redact = (value: string, secrets: string[] = []) => { let result = value.replace(/(?:api[_ -]?key|token|secret|password)\s*[:=]\s*[^\s,;}]+/gi, '$1: [redacted]'); for (const secret of secrets.filter(x => x.length > 3)) result = result.split(secret).join('[redacted]'); return result; };
+const appVersion = process.env.APP_VERSION ?? '1.0.0';
+const aiFailure = (stage: string, requestId: string, cause: unknown, diagnostics: unknown[] = []) => { const source = cause as any; const provider = String(source?.code ?? '').startsWith('PROVIDER_'); const safeDiagnostics = diagnostics.length || source?.diagnostics?.length ? [...diagnostics, ...(source?.diagnostics ?? [])] : [{ code: stage === 'persist_context' ? 'persistence_failed' : 'generation_failed', message: stage === 'persist_context' ? 'The generated specification could not be saved. Retry the request and check server storage.' : 'The AI generation pipeline failed before producing a result. Retry the request.' }]; return Object.assign(new Error(provider ? source.message : 'AI generation failed'), { statusCode: provider ? source.statusCode : 500, code: provider ? source.code : 'AI_BUILD_FAILED', stage, requestId, diagnostics: safeDiagnostics }); };
 
 export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; workspaceRoot?: string; encryptionKey?: string; fetch?: typeof fetch; aiTimeoutMs?: number } = {}): Promise<FastifyInstance> {
   const secret = opts.jwtSecret ?? process.env.JWT_SECRET ?? 'development-only-change-me';
@@ -38,34 +42,61 @@ export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; wo
   const repoFor = (id: string) => { let repo = repos.get(id); if (!repo) { repo = new ProjectVersionRepo(workspaceRoot, id); repos.set(id, repo); } return repo; };
   const versionFiles = (specs: unknown[]): VersionFiles => ({ 'appweave/specification.json': JSON.stringify({ specs }, null, 2) });
   const app = Fastify({ logger: false, genReqId: () => store.id() });
-  await app.register(cors, { origin: process.env.ALLOWED_ORIGINS?.split(',').map(x => x.trim()) ?? true });
+  await app.register(cookie);
+  const allowedOrigins = process.env.ALLOWED_ORIGINS?.split(',').map(x => x.trim()).filter(Boolean) ?? [];
+  await app.register(cors, { origin: allowedOrigins.length ? allowedOrigins : true, credentials: true });
   await app.register(rateLimit, { max: 100, timeWindow: '1 minute' });
   app.setErrorHandler((error, request, reply) => {
     const status = (error as any).statusCode ?? (error instanceof ZodError ? 400 : 500);
     const code = (error as any).code ?? (error instanceof ZodError ? 'VALIDATION_ERROR' : 'INTERNAL_ERROR');
-    if (status >= 500) request.log.error(error);
-    const safeMessage = status >= 500 && !String(code).startsWith('PROVIDER_') && code !== 'INVALID_APPLICATION_SPEC' ? 'Internal server error' : error.message; const details = code === 'INVALID_APPLICATION_SPEC' ? { diagnostics: (error as any).diagnostics ?? [], stages: (error as any).stages ?? [], attempts: (error as any).attempts ?? 0 } : {}; reply.status(status).send({ error: { code, message: safeMessage, requestId: request.id, ...details } });
+    if (status >= 500) request.log.error({ code, requestId: request.id, stage: (error as any).stage, message: redact(String(error.message ?? '')) }, 'request failed');
+    const safeMessage = status >= 500 && !String(code).startsWith('PROVIDER_') && code !== 'INVALID_APPLICATION_SPEC' && code !== 'AI_BUILD_FAILED' ? 'Internal server error' : error.message; const details = code === 'INVALID_APPLICATION_SPEC' ? { diagnostics: (error as any).diagnostics ?? [], stages: (error as any).stages ?? [], attempts: (error as any).attempts ?? 0 } : code === 'AI_BUILD_FAILED' || String(code).startsWith('PROVIDER_') ? { stage: (error as any).stage ?? 'provider_request', diagnostics: (error as any).diagnostics ?? [], requestId: request.id } : {}; reply.status(status).send({ error: { code, message: safeMessage, requestId: request.id, ...details } });
+  });
+  app.addHook('onRequest', async request => {
+    if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method)) return;
+    const origin = request.headers.origin;
+    if (origin) {
+      let sameOrigin = false;
+      try { sameOrigin = new URL(origin).host === request.headers.host; } catch { /* malformed origins are rejected below */ }
+      if (!sameOrigin && !allowedOrigins.includes(origin)) throw bad('Origin is not allowed', 403, 'FORBIDDEN');
+    }
   });
   app.addHook('onClose', async () => { await store.flush(); });
   app.addHook('onResponse', async (request) => { await store.commit(db => db.audits.push({ id: store.id(), userId: undefined, action: `${request.method} ${request.routeOptions.url}`, requestId: request.id, metadata: { status: request.routeOptions.url }, createdAt: now() })); });
-  const auth = (request: any) => userId(request, secret);
+  const cookieName = process.env.SESSION_COOKIE_NAME ?? 'appweave_session';
+  const auth = (request: any) => userId(request, secret, cookieName);
   const project = (request: any) => ownedProject(store, request.params.projectId, auth(request));
   const audit = async (action: string, projectId: string | undefined, uid: string, requestId: string, metadata: unknown = {}) => store.commit(db => db.audits.push({ id: store.id(), action, projectId, userId: uid, requestId, metadata, createdAt: now() }));
+  const cookieSecure = process.env.SESSION_COOKIE_SECURE === 'true';
+  const cookieMaxAge = Number(process.env.SESSION_COOKIE_MAX_AGE ?? 604800);
+  const setSession = (reply: any, uid: string) => reply.setCookie(cookieName, token(uid, secret), { httpOnly: true, sameSite: 'lax', secure: cookieSecure, path: '/', maxAge: Number.isFinite(cookieMaxAge) && cookieMaxAge > 0 ? cookieMaxAge : 604800 });
 
-  app.get('/health', async () => ({ status: 'ok', service: 'appweave-backend', time: now(), storage: 'file-backed-local' }));
+  app.get('/health', async () => ({ status: 'ok', service: 'appweave-backend', version: appVersion, time: now(), storage: 'file-backed-local', providers: [...new Map(store.data.providerConfigs.map(c => [c.provider, { provider: c.provider, baseUrl: c.baseUrl, model: c.model, configured: Boolean(c.keyConfigured && c.keyCiphertext) }])).values()] }));
   app.get('/api/v1/auth/me', async request => { const uid = auth(request); const u = store.data.users.find(x => x.id === uid); if (!u) throw bad('User not found', 404, 'NOT_FOUND'); return { user: { id: u.id, email: u.email } }; });
   app.post('/api/v1/auth/register', async (request, reply) => {
     const body = z.object({ email: z.string().email().transform(x => x.toLowerCase()), password: z.string().min(8).max(200) }).parse(request.body);
     if (store.data.users.some(u => u.email === body.email)) throw bad('Email already registered', 409, 'CONFLICT');
     const u = { id: store.id(), email: body.email, passwordHash: await hash(body.password), createdAt: now() };
     await store.commit(db => db.users.push(u));
-    return reply.code(201).send({ user: { id: u.id, email: u.email }, token: token(u.id, secret) });
+    return setSession(reply.code(201), u.id).send({ user: { id: u.id, email: u.email }, token: token(u.id, secret) });
   });
-  app.post('/api/v1/auth/login', async (request) => {
+  app.post('/api/v1/auth/login', async (request, reply) => {
     const body = z.object({ email: z.string().email().transform(x => x.toLowerCase()), password: z.string() }).parse(request.body);
     const u = store.data.users.find(x => x.email === body.email);
     if (!u || !(await verify(body.password, u.passwordHash))) throw bad('Invalid credentials', 401, 'UNAUTHENTICATED');
-    return { user: { id: u.id, email: u.email }, token: token(u.id, secret) };
+    return setSession(reply, u.id).send({ user: { id: u.id, email: u.email }, token: token(u.id, secret) });
+  });
+  app.post('/api/v1/auth/logout', async (_request, reply) => reply.clearCookie(cookieName, { httpOnly: true, sameSite: 'lax', secure: cookieSecure, path: '/' }).send({ ok: true }));
+  app.get('/api/v1/me/preferences', async request => {
+    const uid = auth(request); return { preferences: store.data.userPreferences.find(x => x.userId === uid) ?? { userId: uid, selectedProjectId: null, selectedProvider: null, selectedModel: null } };
+  });
+  app.patch('/api/v1/me/preferences', async request => {
+    const uid = auth(request); const changes = preferencesInput.parse(request.body);
+    if (changes.selectedProjectId !== undefined && changes.selectedProjectId !== null) ownedProject(store, changes.selectedProjectId, uid);
+    const current = store.data.userPreferences.find(x => x.userId === uid) ?? { userId: uid, updatedAt: now() };
+    const updated: UserPreferences = { ...current, ...changes, updatedAt: now() };
+    await store.commit(db => { const i = db.userPreferences.findIndex(x => x.userId === uid); if (i < 0) db.userPreferences.push(updated); else db.userPreferences[i] = updated; });
+    return { preferences: updated };
   });
   app.get('/api/v1/projects', async request => { const uid = auth(request); return { projects: store.data.projects.filter(p => p.ownerId === uid) }; });
   app.get('/api/v1/overview', async request => { const uid = auth(request); const projects = store.data.projects.filter(p => p.ownerId === uid); const ids = new Set(projects.map(p => p.id)); return { activeProjects: projects.length, requests: store.data.audits.filter(a => a.userId === uid).length, deployments: store.data.deployments.filter(d => ids.has(d.projectId)).length, members: 1, errors: 0, databaseRecords: store.data.products.filter(p => ids.has(p.projectId)).length }; });
@@ -145,11 +176,11 @@ export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; wo
     const memory = store.data.projectMemory.filter(x => x.projectId === p.id).slice(-10).map(x => x.content).join('\n'); const graph = store.data.graphNodes.filter(x => x.projectId === p.id).slice(-20).map(x => `${x.type}:${x.label}`).join(', ');
     const basePrompt = `You are AppWeave's application architect. Return ONLY valid JSON with schema.entities, schema.relationships, schema.roles, schema.permissions, schema.api, schema.frontend, schema.pages, and schema.features. Field types may be string, number, boolean, date, enum, or multi_select. Entity fields may be strings or objects with type, required, options, and description. Context: ${memory}\nGraph: ${graph}\nRequest: ${body.prompt}`;
     const stages: Array<{ name: string; status: 'completed'|'failed'; detail?: string }> = [{ name: 'prompt_context', status: 'completed' }]; let output = ''; let parsed = normalizeApplicationSpec(null); let attempts = 0; let prompt = basePrompt;
-    while (attempts < 3) { attempts++; output = (await providerFor(config).generate(prompt)).output; parsed = output.trim() ? parseProviderSpec(output) : { schema: {} as any, diagnostics: [{ path: '$', message: 'Provider returned an empty response', code: 'empty_response' }] }; if (!parsed.diagnostics.length) break; if (attempts < 3) prompt = `${basePrompt}\nRepair the previous output. Diagnostics: ${JSON.stringify(parsed.diagnostics)}\nPrevious output: ${redact(output).slice(0, 12000)}`; }
+    while (attempts < 3) { attempts++; try { output = (await providerFor(config).generate(prompt)).output; } catch (error) { stages.push({ name: 'provider_request', status: 'failed', detail: 'Provider request failed' }); throw aiFailure('provider_request', request.id, error); } parsed = output.trim() ? parseProviderSpec(output) : { schema: {} as any, diagnostics: [{ path: '$', message: 'Provider returned an empty response', code: 'empty_response' }] }; if (!parsed.diagnostics.length) break; if (attempts < 3) prompt = `${basePrompt}\nRepair the previous output. Diagnostics: ${JSON.stringify(parsed.diagnostics)}\nPrevious output: ${redact(output).slice(0, 12000)}`; }
     stages.push({ name: 'validate_specification', status: parsed.diagnostics.length ? 'failed' : 'completed', detail: parsed.diagnostics.length ? `${parsed.diagnostics.length} diagnostic(s)` : undefined });
     if (parsed.diagnostics.length) throw Object.assign(bad('AI provider returned an invalid application specification', 502, 'INVALID_APPLICATION_SPEC'), { diagnostics: parsed.diagnostics, stages, attempts });
     const previous = store.data.specs.filter(x => x.projectId === p.id); const spec = { id: store.id(), projectId: p.id, version: previous.length + 1, schema: parsed.schema, createdAt: now(), createdBy: uid }; const safePrompt = body.prompt.replace(/(?:api[_ -]?key|token|secret|password)\s*[:=]\s*\S+/gi, '$1: [redacted]'); const mem = [{ id: store.id(), projectId: p.id, kind: 'requirement' as const, content: safePrompt, createdAt: now(), createdBy: uid }, { id: store.id(), projectId: p.id, kind: 'context' as const, content: `Generated specification version ${spec.version}`, createdAt: now(), createdBy: uid }]; const n1 = { id: store.id(), projectId: p.id, type: 'application', label: p.name, createdAt: now() }; const n2 = { id: store.id(), projectId: p.id, type: 'specification', label: `v${spec.version}`, createdAt: now() };
-    await store.commit(db => { db.specs.push(spec); db.projectMemory.push(...mem); db.graphNodes.push(n1, n2); db.graphEdges.push({ id: store.id(), projectId: p.id, from: n1.id, to: n2.id, type: 'produces', createdAt: now() }); db.buildHistory.push({ id: store.id(), projectId: p.id, specVersion: spec.version, stages: [...stages, { name: 'persist_context', status: 'completed' }], createdAt: now(), createdBy: uid }); });
+    try { await store.commit(db => { db.specs.push(spec); db.projectMemory.push(...mem); db.graphNodes.push(n1, n2); db.graphEdges.push({ id: store.id(), projectId: p.id, from: n1.id, to: n2.id, type: 'produces', createdAt: now() }); db.buildHistory.push({ id: store.id(), projectId: p.id, specVersion: spec.version, stages: [...stages, { name: 'persist_context', status: 'completed' }], createdAt: now(), createdBy: uid }); }); } catch (error) { stages.push({ name: 'persist_context', status: 'failed', detail: 'Generated result could not be saved' }); throw aiFailure('persist_context', request.id, error); }
     return { provider: config.provider, configured: true, output: redact(output, [decryptProviderKey(config.keyCiphertext!, encryptionKey)]), applicationSpec: { schema: parsed.schema }, diagnostics: [], attempts, stages, specVersion: spec.version };
   });
   return app;
