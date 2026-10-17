@@ -122,7 +122,7 @@ docker compose ps
 curl http://localhost:3000/health
 ```
 
-Use the host's TLS reverse proxy and network policy for externally exposed deployments. Set `AI_PROVIDER_TIMEOUT_MS` in `.env` when provider requests need a different bounded timeout (default: `120000` ms).
+Use the host's TLS reverse proxy and network policy for externally exposed deployments. Set `AI_PROVIDER_TIMEOUT_MS` in `.env` when provider requests need a different bounded timeout (default: `60000` ms).
 
 ## Gemini model configuration
 

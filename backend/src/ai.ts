@@ -3,10 +3,10 @@ import type { AIProviderConfig, AIProviderName } from './types.js';
 export interface AIProvider { readonly name: AIProviderName; generate(prompt: string): Promise<{ output: string; configured: boolean }>; test(): Promise<{ reachable: boolean; message: string }>; }
 export type OpenRouterModel = { id: string; name: string; context_length: number; supported_parameters: string[] };
 type FetchLike = typeof fetch;
-export const DEFAULT_AI_PROVIDER_TIMEOUT_MS = 120_000;
-export function resolveAIProviderTimeoutMs(value: string | undefined): number {
+export const DEFAULT_AI_PROVIDER_TIMEOUT_MS = 60_000;
+export function resolveAIProviderTimeoutMs(value: string | undefined, fallback = DEFAULT_AI_PROVIDER_TIMEOUT_MS): number {
   const parsed = Number(value);
-  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : DEFAULT_AI_PROVIDER_TIMEOUT_MS;
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 const isTimeoutAbort = (error: unknown, signal: AbortSignal) => {
   const candidate = error as any;

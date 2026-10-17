@@ -22,16 +22,16 @@ const now = () => new Date().toISOString();
 const readHtml = async (path: string) => { const { readFile } = await import('node:fs/promises'); try { return await readFile(path, 'utf8'); } catch { throw bad('Generated application is unavailable', 404, 'NOT_FOUND'); } };
 const bad = (message: string, statusCode = 400, code = 'BAD_REQUEST') => Object.assign(new Error(message), { statusCode, code });
 const settingsInput = z.object({ name: z.string().trim().min(1).max(200).optional(), allowedOrigins: z.array(z.string().url().max(2048)).max(50).optional(), usageLimit: z.number().int().nonnegative().max(10_000_000).optional(), lifecycleStatus: z.enum(['active', 'paused', 'archived']).optional(), environment: z.enum(['development', 'preview', 'production']).optional() }).strict();
-const providerParam = z.object({ provider: z.enum(['gemini', 'openai', 'openrouter']) });
+const providerParam = z.object({ provider: z.enum(['gemini', 'openai', 'openrouter', 'groq']) });
 const providerInput = z.object({ baseUrl: z.string().url().max(2048), model: z.string().trim().min(1).max(200), key: z.string().min(1).max(4096).optional(), apiKey: z.string().min(1).max(4096).optional() }).strict().refine(input => Boolean(input.key ?? input.apiKey), { message: 'A provider key is required', path: ['key'] });
-const providerDefaults: Record<AIProviderName, { baseUrl: string; model: string }> = { gemini: { baseUrl: 'https://generativelanguage.googleapis.com', model: 'gemini-flash-latest' }, openai: { baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' }, openrouter: { baseUrl: 'https://openrouter.ai/api/v1', model: 'openai/gpt-4o-mini' } };
+const providerDefaults: Record<AIProviderName, { baseUrl: string; model: string }> = { gemini: { baseUrl: 'https://generativelanguage.googleapis.com', model: 'gemini-flash-latest' }, openai: { baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' }, openrouter: { baseUrl: 'https://openrouter.ai/api/v1', model: 'openai/gpt-4o-mini' }, groq: { baseUrl: 'https://api.groq.com/openai/v1', model: 'qwen/qwen3.8-27b' } };
 const draftInput = z.object({ prompt: z.string().trim().min(1).max(4000), fields: z.record(z.unknown()).default({}), provider: providerParam.shape.provider.default('openai'), model: z.string().trim().min(1).max(200).optional() }).strict();
 const safePrompt = (value: string) => redact(value).slice(0, 4000);
 const sanitizeFields = (value: unknown): Record<string, unknown> => {
   const clean = (item: unknown): unknown => { if (typeof item === 'string') return safePrompt(item); if (Array.isArray(item)) return item.slice(0, 100).map(clean); if (item && typeof item === 'object') return Object.fromEntries(Object.entries(item as Record<string, unknown>).slice(0, 100).map(([key, child]) => [key, /key|token|secret|password/i.test(key) ? '[redacted]' : clean(child)])); return item; };
   return (clean(value) as Record<string, unknown>) ?? {};
 };
-const preferencesInput = z.object({ selectedProjectId: z.string().uuid().nullable().optional(), selectedProvider: z.enum(['gemini', 'openai', 'openrouter']).nullable().optional(), selectedModel: z.string().trim().min(1).max(200).nullable().optional() }).strict();
+const preferencesInput = z.object({ selectedProjectId: z.string().uuid().nullable().optional(), selectedProvider: z.enum(['gemini', 'openai', 'openrouter', 'groq']).nullable().optional(), selectedModel: z.string().trim().min(1).max(200).nullable().optional() }).strict();
 const providerView = (c: AIProviderConfig) => ({ provider: c.provider, baseUrl: c.baseUrl, model: c.model, configured: Boolean(c.keyConfigured && c.keyCiphertext), key: c.keyConfigured && c.keyCiphertext ? `••••••••${c.keyLast4 ?? ''}` : null, updatedAt: c.updatedAt });
 const redact = (value: string, secrets: string[] = []) => { let result = value.replace(/(?:api[_ -]?key|token|secret|password)\s*[:=]\s*[^\s,;}]+/gi, '$1: [redacted]'); for (const secret of secrets.filter(x => x.length > 3)) result = result.split(secret).join('[redacted]'); return result; };
 const appVersion = process.env.APP_VERSION ?? '1.0.0';
@@ -42,7 +42,7 @@ export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; wo
   const store = await new Store(opts.dataFile ?? process.env.DATA_FILE ?? './data/appweave.json').load();
   const encryptionKey = opts.encryptionKey ?? process.env.AI_ENCRYPTION_KEY ?? (process.env.NODE_ENV === 'test' ? 'test-only-development-encryption-key' : undefined);
   if (!encryptionKey) throw new Error('AI_ENCRYPTION_KEY is required');
-  const providerFor = (config: AIProviderConfig) => { if (!config.keyCiphertext) throw bad('Provider credentials are unavailable; reconfigure this provider', 422, 'PROVIDER_KEY_UNAVAILABLE'); return new HttpAIProvider(config.provider, config, decryptProviderKey(config.keyCiphertext, encryptionKey), opts.fetch, opts.aiTimeoutMs ?? resolveAIProviderTimeoutMs(process.env.AI_PROVIDER_TIMEOUT_MS)); };
+  const providerFor = (config: AIProviderConfig) => { if (!config.keyCiphertext) throw bad('Provider credentials are unavailable; reconfigure this provider', 422, 'PROVIDER_KEY_UNAVAILABLE'); return new HttpAIProvider(config.provider, config, decryptProviderKey(config.keyCiphertext, encryptionKey), opts.fetch, opts.aiTimeoutMs ?? resolveAIProviderTimeoutMs(process.env.AI_PROVIDER_TIMEOUT_MS, 60_000)); };
   const workspaceRoot = opts.workspaceRoot ?? process.env.PROJECT_WORKSPACE_ROOT ?? './data/projects';
   const repos = new Map<string, ProjectVersionRepo>();
   const repoFor = (id: string) => { let repo = repos.get(id); if (!repo) { repo = new ProjectVersionRepo(workspaceRoot, id); repos.set(id, repo); } return repo; };
@@ -122,7 +122,7 @@ export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; wo
     await store.commit(db => { const index = db.projectSettings.findIndex(x => x.projectId === p.id); if (index < 0) db.projectSettings.push(updated); else db.projectSettings[index] = updated; });
     await audit('project.settings.updated', p.id, uid, request.id, { fields: Object.keys(changes) }); return updated;
   });
-  app.get('/api/v1/projects/:projectId/providers', async request => { const p = project(request); return { providers: (['gemini', 'openai', 'openrouter'] as AIProviderName[]).map(provider => { const found = store.data.providerConfigs.find(x => x.projectId === p.id && x.provider === provider); return found ? providerView(found) : { provider, ...providerDefaults[provider], configured: false, key: null }; }) }; });
+  app.get('/api/v1/projects/:projectId/providers', async request => { const p = project(request); return { providers: (['gemini', 'openai', 'openrouter', 'groq'] as AIProviderName[]).map(provider => { const found = store.data.providerConfigs.find(x => x.projectId === p.id && x.provider === provider); return found ? providerView(found) : { provider, ...providerDefaults[provider], configured: false, key: null }; }) }; });
   app.patch('/api/v1/projects/:projectId/providers/:provider', async request => {
     const p = project(request); const uid = auth(request); const { provider } = providerParam.parse(request.params); const input = providerInput.parse(request.body); const updatedAt = now();
     const secretKey = input.key ?? input.apiKey!;
