@@ -9,7 +9,7 @@ import type { Project, Product, Deployment } from './types.js';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { SafeStubProvider } from './ai.js';
+import { decryptProviderKey, encryptProviderKey, HttpAIProvider } from './ai.js';
 import { ProjectVersionRepo, type VersionFiles } from './versions.js';
 import type { Snapshot, AIProviderName, AIProviderConfig, ProjectSettings } from './types.js';
 
@@ -23,12 +23,14 @@ const settingsInput = z.object({ name: z.string().trim().min(1).max(200).optiona
 const providerParam = z.object({ provider: z.enum(['gemini', 'openai', 'openrouter']) });
 const providerInput = z.object({ baseUrl: z.string().url().max(2048), model: z.string().trim().min(1).max(200), key: z.string().min(1).max(4096).optional(), apiKey: z.string().min(1).max(4096).optional() }).strict().refine(input => Boolean(input.key ?? input.apiKey), { message: 'A provider key is required', path: ['key'] });
 const providerDefaults: Record<AIProviderName, { baseUrl: string; model: string }> = { gemini: { baseUrl: 'https://generativelanguage.googleapis.com', model: 'gemini-1.5-flash' }, openai: { baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' }, openrouter: { baseUrl: 'https://openrouter.ai/api/v1', model: 'openai/gpt-4o-mini' } };
-const providerView = (c: AIProviderConfig) => ({ provider: c.provider, baseUrl: c.baseUrl, model: c.model, configured: c.keyConfigured, key: c.keyConfigured ? `••••••••${c.keyLast4 ?? ''}` : null, updatedAt: c.updatedAt });
+const providerView = (c: AIProviderConfig) => ({ provider: c.provider, baseUrl: c.baseUrl, model: c.model, configured: Boolean(c.keyConfigured && c.keyCiphertext), key: c.keyConfigured && c.keyCiphertext ? `••••••••${c.keyLast4 ?? ''}` : null, updatedAt: c.updatedAt });
 
-export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; workspaceRoot?: string } = {}): Promise<FastifyInstance> {
+export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; workspaceRoot?: string; encryptionKey?: string; fetch?: typeof fetch; aiTimeoutMs?: number } = {}): Promise<FastifyInstance> {
   const secret = opts.jwtSecret ?? process.env.JWT_SECRET ?? 'development-only-change-me';
   const store = await new Store(opts.dataFile ?? process.env.DATA_FILE ?? './data/appweave.json').load();
-  const ai = new SafeStubProvider();
+  const encryptionKey = opts.encryptionKey ?? process.env.AI_ENCRYPTION_KEY ?? (process.env.NODE_ENV === 'test' ? 'test-only-development-encryption-key' : undefined);
+  if (!encryptionKey) throw new Error('AI_ENCRYPTION_KEY is required');
+  const providerFor = (config: AIProviderConfig) => { if (!config.keyCiphertext) throw bad('Provider credentials are unavailable; reconfigure this provider', 422, 'PROVIDER_KEY_UNAVAILABLE'); return new HttpAIProvider(config.provider, config, decryptProviderKey(config.keyCiphertext, encryptionKey), opts.fetch, opts.aiTimeoutMs ?? 15_000); };
   const workspaceRoot = opts.workspaceRoot ?? process.env.PROJECT_WORKSPACE_ROOT ?? './data/projects';
   const repos = new Map<string, ProjectVersionRepo>();
   const repoFor = (id: string) => { let repo = repos.get(id); if (!repo) { repo = new ProjectVersionRepo(workspaceRoot, id); repos.set(id, repo); } return repo; };
@@ -40,7 +42,7 @@ export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; wo
     const status = (error as any).statusCode ?? (error instanceof ZodError ? 400 : 500);
     const code = (error as any).code ?? (error instanceof ZodError ? 'VALIDATION_ERROR' : 'INTERNAL_ERROR');
     if (status >= 500) request.log.error(error);
-    reply.status(status).send({ error: { code, message: status >= 500 ? 'Internal server error' : error.message, requestId: request.id } });
+    const safeMessage = status >= 500 && !String(code).startsWith('PROVIDER_') && code !== 'INVALID_APPLICATION_SPEC' ? 'Internal server error' : error.message; reply.status(status).send({ error: { code, message: safeMessage, requestId: request.id } });
   });
   app.addHook('onResponse', async (request) => { await store.commit(db => db.audits.push({ id: store.id(), userId: undefined, action: `${request.method} ${request.routeOptions.url}`, requestId: request.id, metadata: { status: request.routeOptions.url }, createdAt: now() })); });
   const auth = (request: any) => userId(request, secret);
@@ -84,13 +86,14 @@ export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; wo
   app.patch('/api/v1/projects/:projectId/providers/:provider', async request => {
     const p = project(request); const uid = auth(request); const { provider } = providerParam.parse(request.params); const input = providerInput.parse(request.body); const updatedAt = now();
     const secretKey = input.key ?? input.apiKey!;
-    const config: AIProviderConfig = { id: store.id(), projectId: p.id, provider, baseUrl: input.baseUrl, model: input.model, keyDigest: createHash('sha256').update(secretKey).digest('hex'), keyLast4: secretKey.length >= 8 ? secretKey.slice(-4) : undefined, keyConfigured: true, updatedAt };
+    const config: AIProviderConfig = { id: store.id(), projectId: p.id, provider, baseUrl: input.baseUrl, model: input.model, keyCiphertext: encryptProviderKey(secretKey, encryptionKey), keyDigest: createHash('sha256').update(secretKey).digest('hex'), keyLast4: secretKey.length >= 8 ? secretKey.slice(-4) : undefined, keyConfigured: true, updatedAt };
     await store.commit(db => { const index = db.providerConfigs.findIndex(x => x.projectId === p.id && x.provider === provider); if (index < 0) db.providerConfigs.push(config); else db.providerConfigs[index] = { ...config, id: db.providerConfigs[index].id }; });
     await audit('project.provider.updated', p.id, uid, request.id, { provider, configured: true }); return providerView(config);
   });
   app.post('/api/v1/projects/:projectId/providers/:provider/test', async request => {
     const p = project(request); const { provider } = providerParam.parse(request.params); const config = store.data.providerConfigs.find(x => x.projectId === p.id && x.provider === provider);
-    const result = await ai.test(); return { provider, configured: config?.keyConfigured ?? false, reachable: result.reachable, message: result.message };
+    if (!config?.keyConfigured || !config.keyCiphertext) return { provider, configured: false, reachable: false, message: 'Provider is not configured.' };
+    const result = await providerFor(config).test(); return { provider, configured: true, reachable: result.reachable, message: result.message };
   });
   app.delete('/api/v1/projects/:projectId/providers/:provider', async request => { const p = project(request); const uid = auth(request); const { provider } = providerParam.parse(request.params); const index = store.data.providerConfigs.findIndex(x => x.projectId === p.id && x.provider === provider); if (index >= 0) await store.commit(db => { db.providerConfigs.splice(index, 1); }); await audit('project.provider.removed', p.id, uid, request.id, { provider }); return { provider, configured: false }; });
   app.get('/api/v1/projects/:projectId/products', async request => { const p = project(request); return { products: store.data.products.filter(x => x.projectId === p.id) }; });
@@ -132,7 +135,8 @@ export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; wo
   app.post('/api/v1/projects/:projectId/versions/:version/rollback', rollback);
   app.get('/api/v1/projects/:projectId/audit-logs', async request => { const p = project(request); return { logs: store.data.audits.filter(x => x.projectId === p.id) }; });
   app.get('/api/v1/projects/:projectId/schema', async request => { const p = project(request); const versions = store.data.specs.filter(x => x.projectId === p.id); return { entities: [{ name: 'Product', fields: [{ name: 'name', type: 'string', required: true }, { name: 'sku', type: 'string', required: true }, { name: 'price', type: 'number', required: true }, { name: 'description', type: 'string', required: false }] }], version: versions.at(-1)?.version ?? 0, migrationStatus: 'ready' }; });
-  app.post('/api/v1/ai/generate', async request => { auth(request); const { prompt } = z.object({ prompt: z.string().min(1).max(4000) }).parse(request.body); return { provider: ai.name, ...(await ai.generate(prompt)) }; });
+  const generatedSpec = z.object({ schema: z.object({ entities: z.record(z.object({ fields: z.record(z.string()), permissions: z.record(z.array(z.string())).optional() })).default({}), relationships: z.array(z.record(z.string())).default([]), roles: z.array(z.string()).default(['admin']), api: z.record(z.unknown()).default({}), frontend: z.record(z.unknown()).default({}) }) });
+  app.post('/api/v1/ai/generate', async request => { const uid = auth(request); const body = z.object({ projectId: z.string().uuid(), provider: providerParam.shape.provider.optional(), prompt: z.string().trim().min(1).max(4000) }).parse(request.body); const p = ownedProject(store, body.projectId, uid); const config = store.data.providerConfigs.find(x => x.projectId === p.id && x.keyConfigured && (!body.provider || x.provider === body.provider)); if (!config) throw bad('No AI provider is configured for this project', 422, 'PROVIDER_NOT_CONFIGURED'); const providerInstruction = `You are AppWeave's application architect. Return ONLY valid JSON, with no markdown fences, matching this exact shape: {\"schema\":{\"entities\":{\"EntityName\":{\"fields\":{\"fieldName\":\"string|number|boolean|date\"},\"permissions\":{\"role\":[\"read\",\"create\",\"update\",\"delete\"]}}},\"relationships\":[],\"roles\":[\"admin\"],\"api\":{},\"frontend\":{}}}. Design a safe, practical application from this request: ${body.prompt}`; const result = await providerFor(config).generate(providerInstruction); if (!result.output.trim()) throw bad('AI provider returned an empty response', 502, 'PROVIDER_EMPTY_RESPONSE'); let applicationSpec: unknown; try { const json = result.output.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim(); applicationSpec = generatedSpec.parse(JSON.parse(json)); } catch { throw bad('AI provider returned an invalid application specification', 502, 'INVALID_APPLICATION_SPEC'); } return { provider: config.provider, configured: true, output: result.output, applicationSpec }; });
   return app;
 }
 if (process.env.NODE_ENV !== 'test') buildApp().then(app => app.listen({ port: Number(process.env.PORT ?? 3000), host: '0.0.0.0' })).catch(err => { console.error(err); process.exit(1); });

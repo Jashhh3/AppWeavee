@@ -1,12 +1,13 @@
-export interface AIProvider {
-  readonly name: string;
-  generate(prompt: string): Promise<{ output: string; configured: boolean }>;
-  test(): Promise<{ reachable: boolean; message: string }>;
-}
-
-/** Safe default: it never sends prompts over the network or reads credentials. */
-export class SafeStubProvider implements AIProvider {
-  readonly name = 'safe-stub';
-  async generate(_prompt: string) { return { output: 'AI provider is not configured. No external request was made.', configured: false }; }
-  async test() { return { reachable: false, message: 'Safe test completed without making an external request.' }; }
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
+import type { AIProviderConfig, AIProviderName } from './types.js';
+export interface AIProvider { readonly name: AIProviderName; generate(prompt: string): Promise<{ output: string; configured: boolean }>; test(): Promise<{ reachable: boolean; message: string }>; }
+type FetchLike = typeof fetch;
+const keyBytes = (value: string) => createHash('sha256').update(value).digest();
+export function encryptProviderKey(key: string, encryptionKey: string): string { const iv = randomBytes(12); const cipher = createCipheriv('aes-256-gcm', keyBytes(encryptionKey), iv); const ciphertext = Buffer.concat([cipher.update(key, 'utf8'), cipher.final()]); return `${iv.toString('base64url')}.${cipher.getAuthTag().toString('base64url')}.${ciphertext.toString('base64url')}`; }
+export function decryptProviderKey(value: string, encryptionKey: string): string { try { const [iv, tag, ciphertext] = value.split('.'); if (!iv || !tag || !ciphertext) throw new Error(); const decipher = createDecipheriv('aes-256-gcm', keyBytes(encryptionKey), Buffer.from(iv, 'base64url')); decipher.setAuthTag(Buffer.from(tag, 'base64url')); return Buffer.concat([decipher.update(Buffer.from(ciphertext, 'base64url')), decipher.final()]).toString('utf8'); } catch { throw Object.assign(new Error('Provider credentials could not be decrypted'), { statusCode: 500, code: 'PROVIDER_KEY_UNAVAILABLE' }); } }
+export class HttpAIProvider implements AIProvider {
+  constructor(public readonly name: AIProviderName, private readonly config: AIProviderConfig, private readonly key: string, private readonly fetcher: FetchLike = fetch, private readonly timeoutMs = 15_000) {}
+  private async request(body: unknown, url: string, headers: Record<string, string>) { const signal = AbortSignal.timeout(this.timeoutMs); try { const response = await this.fetcher(url, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body), signal }); const text = await response.text(); if (!response.ok) throw Object.assign(new Error(`Provider request failed (${response.status})`), { statusCode: 502, code: 'PROVIDER_REQUEST_FAILED' }); try { return text ? JSON.parse(text) : {}; } catch { throw Object.assign(new Error('Provider returned invalid JSON'), { statusCode: 502, code: 'PROVIDER_INVALID_RESPONSE' }); } } catch (error) { if ((error as any).code?.startsWith('PROVIDER_')) throw error; if ((error as any).name === 'TimeoutError' || (error as any).name === 'AbortError') throw Object.assign(new Error('AI provider request timed out'), { statusCode: 504, code: 'PROVIDER_TIMEOUT' }); throw Object.assign(new Error('AI provider is unreachable'), { statusCode: 502, code: 'PROVIDER_UNREACHABLE' }); } }
+  async generate(prompt: string) { if (this.name === 'gemini') { const url = `${this.config.baseUrl.replace(/\/$/, '')}/v1beta/models/${encodeURIComponent(this.config.model)}:generateContent?key=${encodeURIComponent(this.key)}`; const data: any = await this.request({ contents: [{ parts: [{ text: prompt }] }] }, url, {}); return { output: data?.candidates?.[0]?.content?.parts?.map((p: any) => p.text ?? '').join('') ?? '', configured: true }; } const data: any = await this.request({ model: this.config.model, messages: [{ role: 'user', content: prompt }] }, `${this.config.baseUrl.replace(/\/$/, '')}/chat/completions`, { authorization: `Bearer ${this.key}` }); return { output: typeof data?.choices?.[0]?.message?.content === 'string' ? data.choices[0].message.content : '', configured: true }; }
+  async test() { try { await this.generate('Reply with the single word OK.'); return { reachable: true, message: 'Provider responded successfully.' }; } catch (error) { return { reachable: false, message: (error as Error).message }; } }
 }

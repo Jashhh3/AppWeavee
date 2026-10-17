@@ -6,3 +6,5 @@
 .nav-project{margin:0 8px 15px;padding:10px;border:1px solid var(--line);border-radius:7px;background:#111721}.nav-project label{display:block;color:#718096;font:9px 'DM Mono';text-transform:uppercase;letter-spacing:.7px;margin-bottom:7px}.nav-project select{width:100%;background:#0c1117;border:1px solid var(--line);border-radius:4px;color:#dce2ec;padding:7px;font-size:10px}
 
 .field-help{display:block;color:#718096;font-size:10px;margin-top:6px}.settings select{appearance:auto}
+
+.proposal-output{white-space:pre-wrap;line-height:1.6;color:#c7d0dd}.proposal-summary{display:grid;grid-template-columns:140px 1fr;gap:10px;margin:20px 0;padding:14px;border:1px solid var(--line);border-radius:7px;background:#0d131a;font-size:11px}.proposal-summary b{color:#ffad72}.proposal-summary span{color:#aab5c4}.proposal details{border-top:1px solid var(--line);padding-top:14px;margin-top:14px}.proposal summary{cursor:pointer;color:#ffad72;font-size:11px}.proposal pre{overflow:auto;max-height:320px;background:#0b1016;padding:14px;border-radius:6px;color:#9fb0c5;font:10px 'DM Mono';line-height:1.6}

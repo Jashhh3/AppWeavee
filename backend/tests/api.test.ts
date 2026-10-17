@@ -8,7 +8,7 @@ import type { FastifyInstance } from 'fastify';
 
 describe('AppWeave API', () => {
   let app: FastifyInstance; let dir: string;
-  beforeEach(async () => { dir = await mkdtemp(join(tmpdir(), 'appweave-')); app = await buildApp({ dataFile: join(dir, 'db.json'), workspaceRoot: join(dir, 'projects'), jwtSecret: 'test-secret' }); });
+  beforeEach(async () => { dir = await mkdtemp(join(tmpdir(), 'appweave-')); app = await buildApp({ dataFile: join(dir, 'db.json'), workspaceRoot: join(dir, 'projects'), jwtSecret: 'test-secret', encryptionKey: 'test-encryption-key', fetch: async (url) => new Response(JSON.stringify(String(url).includes('generativelanguage') ? { candidates: [{ content: { parts: [{ text: JSON.stringify({ schema: { entities: {}, relationships: [], roles: ['admin'], api: {}, frontend: {} } }) }] } }] } : { choices: [{ message: { content: JSON.stringify({ schema: { entities: {}, relationships: [], roles: ['admin'], api: {}, frontend: {} } }) } }] }), { status: 200, headers: { 'content-type': 'application/json' } }) }); });
   afterEach(async () => { await app.close(); await rm(dir, { recursive: true, force: true }); });
   async function register(email: string) { const r = await app.inject({ method: 'POST', url: '/api/v1/auth/register', payload: { email, password: 'correct horse battery staple' } }); expect(r.statusCode).toBe(201); return r.json().token as string; }
   it('registers, authenticates, and keeps projects isolated', async () => {
@@ -80,8 +80,23 @@ describe('AppWeave API', () => {
     const listed = await app.inject({ method: 'GET', url: `/api/v1/projects/${id}/providers`, headers: owner });
     expect(listed.statusCode).toBe(200); expect(JSON.stringify(listed.json())).not.toContain(secret); expect(listed.json().providers.find((x: any) => x.provider === 'openai').key).toMatch(/^••••••••alue$/);
     const test = await app.inject({ method: 'POST', url: `/api/v1/projects/${id}/providers/openai/test`, headers: owner });
-    expect(test.statusCode).toBe(200); expect(test.json()).toMatchObject({ provider: 'openai', configured: true, reachable: false });
+    expect(test.statusCode).toBe(200); expect(test.json()).toMatchObject({ provider: 'openai', configured: true, reachable: true });
     expect((await app.inject({ method: 'GET', url: `/api/v1/projects/${id}/providers`, headers: other })).statusCode).toBe(404);
     expect((await app.inject({ method: 'PATCH', url: `/api/v1/projects/${id}/providers/openai`, headers: owner, payload: { baseUrl: 'not-a-url', model: '', key: '' } })).statusCode).toBe(400);
   });
+  it('generates a validated application spec through the configured provider', async () => {
+    const auth = { authorization: `Bearer ${await register('generate@example.com')}` };
+    const p = await app.inject({ method: 'POST', url: '/api/v1/projects', headers: auth, payload: { name: 'Generate' } }); const id = p.json().id;
+    await app.inject({ method: 'PATCH', url: `/api/v1/projects/${id}/providers/gemini`, headers: auth, payload: { baseUrl: 'https://generativelanguage.googleapis.com', model: 'gemini-test', key: 'gemini-secret' } });
+    const response = await app.inject({ method: 'POST', url: '/api/v1/ai/generate', headers: auth, payload: { projectId: id, prompt: 'Create a catalog' } });
+    expect(response.statusCode).toBe(200); expect(response.json()).toMatchObject({ provider: 'gemini', configured: true, applicationSpec: { schema: { roles: ['admin'] } } });
+    expect(JSON.stringify(response.json())).not.toContain('gemini-secret');
+  });
+
+  it('does not allow generation for another owner or invalid provider output', async () => {
+    const owner = { authorization: `Bearer ${await register('gen-owner@example.com')}` }; const other = { authorization: `Bearer ${await register('gen-other@example.com')}` };
+    const p = await app.inject({ method: 'POST', url: '/api/v1/projects', headers: owner, payload: { name: 'Owned' } }); const id = p.json().id;
+    expect((await app.inject({ method: 'POST', url: '/api/v1/ai/generate', headers: other, payload: { projectId: id, prompt: 'x' } })).statusCode).toBe(404);
+  });
+
 });

@@ -6,6 +6,7 @@ services:
     environment:
       NODE_ENV: production
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      AI_ENCRYPTION_KEY: ${AI_ENCRYPTION_KEY:-change-me-in-production-encryption-key}
       DATA_FILE: /data/appweave.json
     volumes:
       - appweave-data:/data
