@@ -8,9 +8,10 @@ import { hash, verify, token, userId, ownedProject } from './auth.js';
 import type { Project, Product, Deployment } from './types.js';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { SafeStubProvider } from './ai.js';
 import { ProjectVersionRepo, type VersionFiles } from './versions.js';
-import type { Snapshot } from './types.js';
+import type { Snapshot, AIProviderName, AIProviderConfig, ProjectSettings } from './types.js';
 
 const productInput = z.object({ name: z.string().trim().min(1).max(200), sku: z.string().trim().min(1).max(80), price: z.number().finite().nonnegative(), description: z.string().max(2000).optional() });
 const specInput = z.object({ schema: z.object({ entities: z.record(z.object({ fields: z.record(z.string()), permissions: z.record(z.array(z.string())).optional() })).default({}), relationships: z.array(z.record(z.string())).default([]), roles: z.array(z.string()).default(['admin']), api: z.record(z.unknown()).default({}), frontend: z.record(z.unknown()).default({}) }) });
@@ -18,6 +19,11 @@ const idParam = z.object({ projectId: z.string().uuid() });
 const now = () => new Date().toISOString();
 const readHtml = async (path: string) => { const { readFile } = await import('node:fs/promises'); try { return await readFile(path, 'utf8'); } catch { throw bad('Generated application is unavailable', 404, 'NOT_FOUND'); } };
 const bad = (message: string, statusCode = 400, code = 'BAD_REQUEST') => Object.assign(new Error(message), { statusCode, code });
+const settingsInput = z.object({ name: z.string().trim().min(1).max(200).optional(), allowedOrigins: z.array(z.string().url().max(2048)).max(50).optional(), usageLimit: z.number().int().nonnegative().max(10_000_000).optional(), lifecycleStatus: z.enum(['active', 'paused', 'archived']).optional(), environment: z.enum(['development', 'preview', 'production']).optional() }).strict();
+const providerParam = z.object({ provider: z.enum(['gemini', 'openai', 'openrouter']) });
+const providerInput = z.object({ baseUrl: z.string().url().max(2048), model: z.string().trim().min(1).max(200), key: z.string().min(1).max(4096).optional(), apiKey: z.string().min(1).max(4096).optional() }).strict().refine(input => Boolean(input.key ?? input.apiKey), { message: 'A provider key is required', path: ['key'] });
+const providerDefaults: Record<AIProviderName, { baseUrl: string; model: string }> = { gemini: { baseUrl: 'https://generativelanguage.googleapis.com', model: 'gemini-1.5-flash' }, openai: { baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini' }, openrouter: { baseUrl: 'https://openrouter.ai/api/v1', model: 'openai/gpt-4o-mini' } };
+const providerView = (c: AIProviderConfig) => ({ provider: c.provider, baseUrl: c.baseUrl, model: c.model, configured: c.keyConfigured, key: c.keyConfigured ? `••••••••${c.keyLast4 ?? ''}` : null, updatedAt: c.updatedAt });
 
 export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; workspaceRoot?: string } = {}): Promise<FastifyInstance> {
   const secret = opts.jwtSecret ?? process.env.JWT_SECRET ?? 'development-only-change-me';
@@ -60,9 +66,33 @@ export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; wo
   app.get('/api/v1/overview', async request => { const uid = auth(request); const projects = store.data.projects.filter(p => p.ownerId === uid); const ids = new Set(projects.map(p => p.id)); return { activeProjects: projects.length, requests: store.data.audits.filter(a => a.userId === uid).length, deployments: store.data.deployments.filter(d => ids.has(d.projectId)).length, members: 1, errors: 0, databaseRecords: store.data.products.filter(p => ids.has(p.projectId)).length }; });
   app.post('/api/v1/projects', async (request, reply) => {
     const uid = auth(request); const body = z.object({ name: z.string().trim().min(1).max(200) }).parse(request.body); const date = now();
-    const projectId = store.id(); const p: Project = { id: projectId, ownerId: uid, name: body.name, environment: 'development', publicClientId: `aw_public_${projectId.replaceAll('-', '')}`, previewUrl: `http://localhost:4173/preview/${projectId}`, productionUrl: `https://app.appweave.local/${projectId}`, createdAt: date, updatedAt: date }; await store.commit(db => db.projects.push(p)); await audit('project.created', p.id, uid, request.id); return reply.code(201).send(p);
+    const projectId = store.id(); const p: Project = { id: projectId, ownerId: uid, name: body.name, environment: 'development', publicClientId: `aw_public_${projectId.replaceAll('-', '')}`, previewUrl: `http://localhost:4173/preview/${projectId}`, productionUrl: `https://app.appweave.local/${projectId}`, createdAt: date, updatedAt: date }; const settings: ProjectSettings = { projectId, name: p.name, allowedOrigins: [], usageLimit: 10000, lifecycleStatus: 'active', environment: p.environment, updatedAt: date }; await store.commit(db => { db.projects.push(p); db.projectSettings.push(settings); }); await audit('project.created', p.id, uid, request.id); return reply.code(201).send(p);
   });
   app.get('/api/v1/projects/:projectId', async request => project(request));
+  app.get('/api/v1/projects/:projectId/settings', async request => {
+    const p = project(request); const existing = store.data.projectSettings.find(x => x.projectId === p.id);
+    return existing ?? { projectId: p.id, name: p.name, allowedOrigins: [], usageLimit: 10000, lifecycleStatus: 'active', environment: p.environment, updatedAt: p.updatedAt };
+  });
+  app.patch('/api/v1/projects/:projectId/settings', async request => {
+    const p = project(request); const uid = auth(request); const changes = settingsInput.parse(request.body);
+    const current = store.data.projectSettings.find(x => x.projectId === p.id) ?? { projectId: p.id, name: p.name, allowedOrigins: [], usageLimit: 10000, lifecycleStatus: 'active' as const, environment: p.environment, updatedAt: p.updatedAt };
+    const updated: ProjectSettings = { ...current, ...changes, updatedAt: now() }; Object.assign(p, { name: updated.name, environment: updated.environment, updatedAt: updated.updatedAt });
+    await store.commit(db => { const index = db.projectSettings.findIndex(x => x.projectId === p.id); if (index < 0) db.projectSettings.push(updated); else db.projectSettings[index] = updated; });
+    await audit('project.settings.updated', p.id, uid, request.id, { fields: Object.keys(changes) }); return updated;
+  });
+  app.get('/api/v1/projects/:projectId/providers', async request => { const p = project(request); return { providers: (['gemini', 'openai', 'openrouter'] as AIProviderName[]).map(provider => { const found = store.data.providerConfigs.find(x => x.projectId === p.id && x.provider === provider); return found ? providerView(found) : { provider, ...providerDefaults[provider], configured: false, key: null }; }) }; });
+  app.patch('/api/v1/projects/:projectId/providers/:provider', async request => {
+    const p = project(request); const uid = auth(request); const { provider } = providerParam.parse(request.params); const input = providerInput.parse(request.body); const updatedAt = now();
+    const secretKey = input.key ?? input.apiKey!;
+    const config: AIProviderConfig = { id: store.id(), projectId: p.id, provider, baseUrl: input.baseUrl, model: input.model, keyDigest: createHash('sha256').update(secretKey).digest('hex'), keyLast4: secretKey.length >= 8 ? secretKey.slice(-4) : undefined, keyConfigured: true, updatedAt };
+    await store.commit(db => { const index = db.providerConfigs.findIndex(x => x.projectId === p.id && x.provider === provider); if (index < 0) db.providerConfigs.push(config); else db.providerConfigs[index] = { ...config, id: db.providerConfigs[index].id }; });
+    await audit('project.provider.updated', p.id, uid, request.id, { provider, configured: true }); return providerView(config);
+  });
+  app.post('/api/v1/projects/:projectId/providers/:provider/test', async request => {
+    const p = project(request); const { provider } = providerParam.parse(request.params); const config = store.data.providerConfigs.find(x => x.projectId === p.id && x.provider === provider);
+    const result = await ai.test(); return { provider, configured: config?.keyConfigured ?? false, reachable: result.reachable, message: result.message };
+  });
+  app.delete('/api/v1/projects/:projectId/providers/:provider', async request => { const p = project(request); const uid = auth(request); const { provider } = providerParam.parse(request.params); const index = store.data.providerConfigs.findIndex(x => x.projectId === p.id && x.provider === provider); if (index >= 0) await store.commit(db => { db.providerConfigs.splice(index, 1); }); await audit('project.provider.removed', p.id, uid, request.id, { provider }); return { provider, configured: false }; });
   app.get('/api/v1/projects/:projectId/products', async request => { const p = project(request); return { products: store.data.products.filter(x => x.projectId === p.id) }; });
   app.post('/api/v1/projects/:projectId/products', async (request, reply) => { const p = project(request); const uid = auth(request); const body = productInput.parse(request.body); const date = now(); const item: Product = { id: store.id(), projectId: p.id, ...body, createdAt: date, updatedAt: date }; await store.commit(db => db.products.push(item)); await audit('product.created', p.id, uid, request.id); return reply.code(201).send(item); });
   app.get('/api/v1/projects/:projectId/products/:productId', async request => { const p = project(request); const item = store.data.products.find(x => x.projectId === p.id && x.id === (request.params as any).productId); if (!item) throw bad('Product not found', 404, 'NOT_FOUND'); return item; });

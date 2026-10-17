@@ -1,8 +1,11 @@
 export type User = { id: string; email: string; passwordHash: string; createdAt: string };
 export type Project = { id: string; ownerId: string; name: string; environment: 'development'|'preview'|'production'; publicClientId: string; previewUrl: string; productionUrl: string; createdAt: string; updatedAt: string };
+export type ProjectSettings = { projectId: string; name: string; allowedOrigins: string[]; usageLimit: number; lifecycleStatus: 'active'|'paused'|'archived'; environment: 'development'|'preview'|'production'; updatedAt: string };
+export type AIProviderName = 'gemini'|'openai'|'openrouter';
+export type AIProviderConfig = { id: string; projectId: string; provider: AIProviderName; baseUrl: string; model: string; keyDigest?: string; keyLast4?: string; keyConfigured: boolean; updatedAt: string };
 export type Product = { id: string; projectId: string; name: string; sku: string; price: number; description?: string; createdAt: string; updatedAt: string };
 export type Audit = { id: string; projectId?: string; userId?: string; action: string; requestId: string; metadata: unknown; createdAt: string };
 export type AppSpec = { id: string; projectId: string; version: number; schema: unknown; createdAt: string; createdBy: string };
 export type Deployment = { id: string; projectId: string; environment: 'preview'|'production'; version: number; status: 'building'|'active'|'failed'|'rolled_back'; url: string; buildId: string; buildLog: string[]; createdAt: string; createdBy: string };
 export type Snapshot = { id: string; projectId: string; version: number; reason: string; state: { specs: AppSpec[] }; files: Record<string, string>; commitSha?: string; createdAt: string; createdBy: string };
-export type DB = { users: User[]; projects: Project[]; products: Product[]; audits: Audit[]; specs: AppSpec[]; deployments: Deployment[]; snapshots: Snapshot[] };
+export type DB = { users: User[]; projects: Project[]; projectSettings: ProjectSettings[]; providerConfigs: AIProviderConfig[]; products: Product[]; audits: Audit[]; specs: AppSpec[]; deployments: Deployment[]; snapshots: Snapshot[] };

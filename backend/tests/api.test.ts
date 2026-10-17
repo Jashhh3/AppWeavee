@@ -56,4 +56,32 @@ describe('AppWeave API', () => {
     const published = await app.inject({ method: 'POST', url: `/api/v1/projects/${id}/publish`, headers: auth, payload: { version: 1 } }); expect(published.statusCode).toBe(200);
     expect((await app.inject({ method: 'GET', url: `/api/v1/projects/${id}/audit-logs`, headers: auth })).json().logs.length).toBeGreaterThan(0);
   });
+
+  it('manages owned project settings and validates updates', async () => {
+    const owner = { authorization: `Bearer ${await register('settings-owner@example.com')}` };
+    const other = { authorization: `Bearer ${await register('settings-other@example.com')}` };
+    const created = await app.inject({ method: 'POST', url: '/api/v1/projects', headers: owner, payload: { name: 'Settings' } });
+    const id = created.json().id;
+    const initial = await app.inject({ method: 'GET', url: `/api/v1/projects/${id}/settings`, headers: owner });
+    expect(initial.statusCode).toBe(200); expect(initial.json()).toMatchObject({ name: 'Settings', lifecycleStatus: 'active', environment: 'development' });
+    const updated = await app.inject({ method: 'PATCH', url: `/api/v1/projects/${id}/settings`, headers: owner, payload: { name: 'Renamed', allowedOrigins: ['https://example.com'], usageLimit: 250, lifecycleStatus: 'paused', environment: 'preview' } });
+    expect(updated.statusCode).toBe(200); expect(updated.json()).toMatchObject({ name: 'Renamed', allowedOrigins: ['https://example.com'], usageLimit: 250, lifecycleStatus: 'paused', environment: 'preview' });
+    expect((await app.inject({ method: 'GET', url: `/api/v1/projects/${id}/settings`, headers: other })).statusCode).toBe(404);
+    expect((await app.inject({ method: 'PATCH', url: `/api/v1/projects/${id}/settings`, headers: owner, payload: { usageLimit: -1 } })).statusCode).toBe(400);
+  });
+
+  it('stores provider credentials without returning keys and isolates provider operations', async () => {
+    const owner = { authorization: `Bearer ${await register('provider-owner@example.com')}` };
+    const other = { authorization: `Bearer ${await register('provider-other@example.com')}` };
+    const created = await app.inject({ method: 'POST', url: '/api/v1/projects', headers: owner, payload: { name: 'Providers' } });
+    const id = created.json().id; const secret = 'sk-test-secret-value';
+    const saved = await app.inject({ method: 'PATCH', url: `/api/v1/projects/${id}/providers/openai`, headers: owner, payload: { baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini', key: secret } });
+    expect(saved.statusCode).toBe(200); expect(saved.json()).toMatchObject({ provider: 'openai', configured: true, model: 'gpt-4o-mini' }); expect(JSON.stringify(saved.json())).not.toContain(secret);
+    const listed = await app.inject({ method: 'GET', url: `/api/v1/projects/${id}/providers`, headers: owner });
+    expect(listed.statusCode).toBe(200); expect(JSON.stringify(listed.json())).not.toContain(secret); expect(listed.json().providers.find((x: any) => x.provider === 'openai').key).toMatch(/^••••••••alue$/);
+    const test = await app.inject({ method: 'POST', url: `/api/v1/projects/${id}/providers/openai/test`, headers: owner });
+    expect(test.statusCode).toBe(200); expect(test.json()).toMatchObject({ provider: 'openai', configured: true, reachable: false });
+    expect((await app.inject({ method: 'GET', url: `/api/v1/projects/${id}/providers`, headers: other })).statusCode).toBe(404);
+    expect((await app.inject({ method: 'PATCH', url: `/api/v1/projects/${id}/providers/openai`, headers: owner, payload: { baseUrl: 'not-a-url', model: '', key: '' } })).statusCode).toBe(400);
+  });
 });
