@@ -96,6 +96,10 @@ curl http://localhost:3000/health
 
 Use the host's TLS reverse proxy and network policy for externally exposed deployments.
 
+## Gemini model configuration
+
+Gemini model availability depends on the provider account and API version. AppWeave includes selectable model IDs in the dashboard, including `gemini-3.8-flash`, `gemini-flash-latest`, `gemini-3.5-flash`, and `gemini-3.1-pro-preview`. Use **Settings → AI Providers → Test connection** to verify the saved key and selected model. Never paste provider API keys into chat, source files, screenshots, or Git; rotate a key immediately if it is exposed.
+
 ## Workspace layout
 
 - `backend/`: Fastify API, authorization, persistence, and tests
