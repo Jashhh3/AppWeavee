@@ -7,7 +7,7 @@ const provider = (fetcher: typeof fetch) => new HttpAIProvider('openai', config,
 
 describe('AI provider error mapping', () => {
   it.each([[404, 'PROVIDER_MODEL_NOT_FOUND', 404], [401, 'PROVIDER_UNAUTHORIZED', 401], [429, 'PROVIDER_RATE_LIMITED', 429]] as const)('maps HTTP %s safely', async (status, code, statusCode) => {
-    await expect(provider(async () => new Response(JSON.stringify({ error: { message: 'token=should-not-leak' } }), { status }) as Response).generate('prompt')).rejects.toMatchObject({ code, statusCode });
+    await expect(provider(async () => new Response(JSON.stringify({ error: { message: 'token=should-not-leak' } }), { status, headers: status === 429 ? { 'retry-after': '30' } : undefined }) as Response).generate('prompt')).rejects.toMatchObject({ code, statusCode });
     await expect(provider(async () => new Response(JSON.stringify({ error: { message: 'token=should-not-leak' } }), { status }) as Response).generate('prompt')).rejects.not.toThrow('should-not-leak');
   });
 
