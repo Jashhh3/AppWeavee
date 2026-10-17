@@ -17,3 +17,4 @@
 .error-meta{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;color:#dca0a0;font:10px "DM Mono"}.error-meta span{border:1px solid #5b3438;border-radius:4px;padding:4px 6px}
 
 .settings .field-help{display:block}.settings .btn{margin-top:8px}
+.builder-provider{display:flex;align-items:flex-start;justify-content:space-between;gap:24px;margin-bottom:18px}.builder-provider h3{margin:5px 0}.builder-provider p{margin:0}.builder-selects{display:flex;gap:10px;min-width:360px}.builder-selects label{flex:1;color:#aeb8c8;font-size:10px}.builder-selects select{display:block;width:100%;margin-top:6px;background:#0c1117;border:1px solid var(--line);border-radius:6px;padding:10px;color:#fff;font-size:11px}.builder-provider .empty{margin:0;flex:1}.builder-provider .empty p{margin:4px 0 10px}
