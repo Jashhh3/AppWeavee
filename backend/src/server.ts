@@ -129,6 +129,12 @@ export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; wo
     if (!config?.keyConfigured || !config.keyCiphertext) return { provider, configured: false, reachable: false, message: 'Provider is not configured.' };
     const result = await providerFor(config).test(); return { provider, configured: true, reachable: result.reachable, message: result.message };
   });
+  app.get('/api/v1/projects/:projectId/providers/openrouter/models', async request => {
+    const p = project(request);
+    const config = store.data.providerConfigs.find(x => x.projectId === p.id && x.provider === 'openrouter');
+    if (!config?.keyConfigured || !config.keyCiphertext) throw bad('OpenRouter is not configured for this project', 422, 'PROVIDER_NOT_CONFIGURED');
+    return { models: await providerFor(config).discoverOpenRouterModels() };
+  });
   app.delete('/api/v1/projects/:projectId/providers/:provider', async request => { const p = project(request); const uid = auth(request); const { provider } = providerParam.parse(request.params); const index = store.data.providerConfigs.findIndex(x => x.projectId === p.id && x.provider === provider); if (index >= 0) await store.commit(db => { db.providerConfigs.splice(index, 1); }); await audit('project.provider.removed', p.id, uid, request.id, { provider }); return { provider, configured: false }; });
   app.get('/api/v1/projects/:projectId/products', async request => { const p = project(request); return { products: store.data.products.filter(x => x.projectId === p.id) }; });
   app.post('/api/v1/projects/:projectId/products', async (request, reply) => { const p = project(request); const uid = auth(request); const body = productInput.parse(request.body); const date = now(); const item: Product = { id: store.id(), projectId: p.id, ...body, createdAt: date, updatedAt: date }; await store.commit(db => db.products.push(item)); await audit('product.created', p.id, uid, request.id); return reply.code(201).send(item); });

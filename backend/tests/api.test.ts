@@ -7,8 +7,8 @@ import { buildApp } from '../src/server.js';
 import type { FastifyInstance } from 'fastify';
 
 describe('AppWeave API', () => {
-  let app: FastifyInstance; let dir: string;
-  beforeEach(async () => { dir = await mkdtemp(join(tmpdir(), 'appweave-')); app = await buildApp({ dataFile: join(dir, 'db.json'), workspaceRoot: join(dir, 'projects'), jwtSecret: 'test-secret', encryptionKey: 'test-encryption-key', fetch: async (url) => new Response(JSON.stringify(String(url).includes('generativelanguage') ? { candidates: [{ content: { parts: [{ text: JSON.stringify({ schema: { entities: {}, relationships: [], roles: ['admin'], api: {}, frontend: {} } }) }] } }] } : { choices: [{ message: { content: JSON.stringify({ schema: { entities: {}, relationships: [], roles: ['admin'], api: {}, frontend: {} } }) } }] }), { status: 200, headers: { 'content-type': 'application/json' } }) }); });
+  let app: FastifyInstance; let dir: string; let openrouterUnavailable = false;
+  beforeEach(async () => { openrouterUnavailable = false; dir = await mkdtemp(join(tmpdir(), 'appweave-')); app = await buildApp({ dataFile: join(dir, 'db.json'), workspaceRoot: join(dir, 'projects'), jwtSecret: 'test-secret', encryptionKey: 'test-encryption-key', fetch: async (url) => { if (String(url).includes('/api/v1/models')) { if (openrouterUnavailable) throw new Error('connection refused'); return new Response(JSON.stringify({ data: [{ id: 'free/model', name: 'Free Model', context_length: 8192, supported_parameters: ['tools', 'response_format'], pricing: { prompt: '0', completion: '0' }, secret: 'do-not-return' }, { id: 'paid/model', name: 'Paid Model', context_length: 4096, supported_parameters: [], pricing: { prompt: '0.000001', completion: '0' } }] }), { status: 200, headers: { 'content-type': 'application/json' } }); } return new Response(JSON.stringify(String(url).includes('generativelanguage') ? { candidates: [{ content: { parts: [{ text: JSON.stringify({ schema: { entities: {}, relationships: [], roles: ['admin'], api: {}, frontend: {} } }) }] } }] } : { choices: [{ message: { content: JSON.stringify({ schema: { entities: {}, relationships: [], roles: ['admin'], api: {}, frontend: {} } }) } }] }), { status: 200, headers: { 'content-type': 'application/json' } }); } }); });
   afterEach(async () => { await app.close(); await rm(dir, { recursive: true, force: true }); });
   async function register(email: string) { const r = await app.inject({ method: 'POST', url: '/api/v1/auth/register', payload: { email, password: 'correct horse battery staple' } }); expect(r.statusCode).toBe(201); return r.json().token as string; }
   it('registers, authenticates, and keeps projects isolated', async () => {
@@ -105,6 +105,21 @@ describe('AppWeave API', () => {
     expect(test.statusCode).toBe(200); expect(test.json()).toMatchObject({ provider: 'openai', configured: true, reachable: true });
     expect((await app.inject({ method: 'GET', url: `/api/v1/projects/${id}/providers`, headers: other })).statusCode).toBe(404);
     expect((await app.inject({ method: 'PATCH', url: `/api/v1/projects/${id}/providers/openai`, headers: owner, payload: { baseUrl: 'not-a-url', model: '', key: '' } })).statusCode).toBe(400);
+  });
+  it('discovers only free OpenRouter models with safe metadata and project ownership', async () => {
+    const owner = { authorization: `Bearer ${await register('models-owner@example.com')}` }; const other = { authorization: `Bearer ${await register('models-other@example.com')}` };
+    const id = (await app.inject({ method: 'POST', url: '/api/v1/projects', headers: owner, payload: { name: 'Models' } })).json().id;
+    await app.inject({ method: 'PATCH', url: `/api/v1/projects/${id}/providers/openrouter`, headers: owner, payload: { baseUrl: 'https://openrouter.ai/api/v1///', model: 'openrouter/auto', key: 'or-secret-key' } });
+    const response = await app.inject({ method: 'GET', url: `/api/v1/projects/${id}/providers/openrouter/models`, headers: owner });
+    expect(response.statusCode).toBe(200); expect(response.json()).toEqual({ models: [{ id: 'free/model', name: 'Free Model', context_length: 8192, supported_parameters: ['tools', 'response_format'] }] });
+    expect(JSON.stringify(response.json())).not.toContain('or-secret-key');
+    expect((await app.inject({ method: 'GET', url: `/api/v1/projects/${id}/providers/openrouter/models`, headers: other })).statusCode).toBe(404);
+  });
+  it('returns an actionable provider unavailable error for model discovery', async () => {
+    const auth = { authorization: `Bearer ${await register('models-down@example.com')}` }; const id = (await app.inject({ method: 'POST', url: '/api/v1/projects', headers: auth, payload: { name: 'Unavailable' } })).json().id;
+    await app.inject({ method: 'PATCH', url: `/api/v1/projects/${id}/providers/openrouter`, headers: auth, payload: { baseUrl: 'https://openrouter.ai/api/v1', model: 'openrouter/auto', key: 'or-secret-key' } }); openrouterUnavailable = true;
+    const response = await app.inject({ method: 'GET', url: `/api/v1/projects/${id}/providers/openrouter/models`, headers: auth });
+    expect(response.statusCode).toBe(503); expect(response.json().error).toMatchObject({ code: 'PROVIDER_UNAVAILABLE', message: 'AI provider is unreachable' }); expect(JSON.stringify(response.json())).not.toContain('or-secret-key');
   });
   it('generates a validated application spec through the configured provider', async () => {
     const auth = { authorization: `Bearer ${await register('generate@example.com')}` };

@@ -15,3 +15,5 @@
 .session-loading{min-height:100vh;display:grid;place-content:center;justify-items:center;gap:12px;color:#aeb7c5;font-size:12px}
 
 .error-meta{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;color:#dca0a0;font:10px "DM Mono"}.error-meta span{border:1px solid #5b3438;border-radius:4px;padding:4px 6px}
+
+.settings .field-help{display:block}.settings .btn{margin-top:8px}
