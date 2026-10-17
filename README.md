@@ -10,6 +10,34 @@ AppWeave is a self-contained AI application builder with a Fastify/TypeScript AP
 
 No database or provider credentials are required for local development or the offline checks.
 
+## Automatic local secret setup
+
+Use the startup script instead of manually creating JWT or AI encryption secrets. It creates `.env` on the first run and preserves both secrets on every later run. The file is ignored by Git.
+
+PowerShell:
+
+```powershell
+.\scripts\start.ps1
+```
+
+Linux/macOS:
+
+```sh
+./scripts/start.sh
+```
+
+For environment setup without starting Docker:
+
+```powershell
+.\scripts\bootstrap-env.ps1
+```
+
+```sh
+./scripts/bootstrap-env.sh
+```
+
+Never use `--force`-style secret regeneration for an existing installation. Changing `AI_ENCRYPTION_KEY` makes previously encrypted provider keys unreadable; if it is lost, re-enter provider keys after generating a replacement.
+
 ## Setup
 
 From the repository root:
