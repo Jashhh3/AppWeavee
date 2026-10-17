@@ -46,6 +46,7 @@ export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; wo
     if (status >= 500) request.log.error(error);
     const safeMessage = status >= 500 && !String(code).startsWith('PROVIDER_') && code !== 'INVALID_APPLICATION_SPEC' ? 'Internal server error' : error.message; const details = code === 'INVALID_APPLICATION_SPEC' ? { diagnostics: (error as any).diagnostics ?? [], stages: (error as any).stages ?? [], attempts: (error as any).attempts ?? 0 } : {}; reply.status(status).send({ error: { code, message: safeMessage, requestId: request.id, ...details } });
   });
+  app.addHook('onClose', async () => { await store.flush(); });
   app.addHook('onResponse', async (request) => { await store.commit(db => db.audits.push({ id: store.id(), userId: undefined, action: `${request.method} ${request.routeOptions.url}`, requestId: request.id, metadata: { status: request.routeOptions.url }, createdAt: now() })); });
   const auth = (request: any) => userId(request, secret);
   const project = (request: any) => ownedProject(store, request.params.projectId, auth(request));
