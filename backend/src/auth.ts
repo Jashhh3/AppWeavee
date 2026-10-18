@@ -28,7 +28,16 @@ export function userId(request: FastifyRequest, secret: string, cookieName = 'ap
   catch { throw Object.assign(new Error('Invalid or expired token'), { statusCode: 401, code: 'UNAUTHENTICATED' }); }
 }
 export function ownedProject(store: Store, projectId: string, ownerId: string) {
-  const project = store.data.projects.find(p => p.id === projectId && p.ownerId === ownerId);
+  const project = store.data.projects.find(p => p.id === projectId && projectBelongsTo(p.ownerId, ownerId));
   if (!project) throw Object.assign(new Error('Project not found'), { statusCode: 404, code: 'NOT_FOUND' });
   return project;
+}
+
+export function projectBelongsTo(projectOwnerId: string, userId: string) {
+  const localMode = process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'test';
+  return projectOwnerId === userId || (localMode && (process.env.APPWEAVE_MCP_LOCAL_TEST_MODE === 'true' || process.env.NODE_ENV === 'test') && projectOwnerId === 'local-mcp-test-user');
+}
+
+export function ownedProjects(store: Store, ownerId: string) {
+  return store.data.projects.filter(project => projectBelongsTo(project.ownerId, ownerId));
 }

@@ -31,6 +31,15 @@ describe('local MCP test authentication mode', () => {
     expect(created.json().result.structuredContent.name).toBe('Local connector test');
   });
 
+  it('shows local MCP-created projects in the authenticated dashboard during development', async () => {
+    await start({ mcpLocalTestMode: true });
+    const registered = await app!.inject({ method: 'POST', url: '/api/v1/auth/register', payload: { email: 'dashboard@example.com', password: 'password-123' } });
+    const created = await app!.inject({ method: 'POST', url: '/mcp', payload: { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'create_project', arguments: { name: 'Visible connector project' } } } });
+    const listed = await app!.inject({ method: 'GET', url: '/api/v1/projects', headers: { authorization: `Bearer ${registered.json().token}` } });
+    expect(created.statusCode).toBe(200);
+    expect(listed.json().projects).toEqual(expect.arrayContaining([expect.objectContaining({ name: 'Visible connector project' })]));
+  });
+
   it('ignores the flag in production', async () => {
     const previous = process.env.NODE_ENV;
     process.env.NODE_ENV = 'production';

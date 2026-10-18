@@ -5,7 +5,7 @@ import cookie from '@fastify/cookie';
 import rateLimit from '@fastify/rate-limit';
 import { z, ZodError } from 'zod';
 import { Store } from './store.js';
-import { hash, verify, token, userId, ownedProject } from './auth.js';
+import { hash, verify, token, userId, ownedProject, ownedProjects } from './auth.js';
 import type { Project, Product, Deployment, UserPreferences, AIBuildDraft } from './types.js';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -138,8 +138,8 @@ export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; wo
     await store.commit(db => { const i = db.userPreferences.findIndex(x => x.userId === uid); if (i < 0) db.userPreferences.push(updated); else db.userPreferences[i] = updated; });
     return { preferences: updated };
   });
-  app.get('/api/v1/projects', async request => { const uid = auth(request); return { projects: store.data.projects.filter(p => p.ownerId === uid).map(p => ({ ...p, previewUrl: previewUrl(p.id) })) }; });
-  app.get('/api/v1/overview', async request => { const uid = auth(request); const projects = store.data.projects.filter(p => p.ownerId === uid); const ids = new Set(projects.map(p => p.id)); return { activeProjects: projects.length, requests: store.data.audits.filter(a => a.userId === uid).length, deployments: store.data.deployments.filter(d => ids.has(d.projectId)).length, members: 1, errors: 0, databaseRecords: store.data.products.filter(p => ids.has(p.projectId)).length }; });
+  app.get('/api/v1/projects', async request => { const uid = auth(request); return { projects: ownedProjects(store, uid).map(p => ({ ...p, previewUrl: previewUrl(p.id) })) }; });
+  app.get('/api/v1/overview', async request => { const uid = auth(request); const projects = ownedProjects(store, uid); const ids = new Set(projects.map(p => p.id)); return { activeProjects: projects.length, requests: store.data.audits.filter(a => a.userId === uid || (process.env.NODE_ENV === 'development' && process.env.APPWEAVE_MCP_LOCAL_TEST_MODE === 'true' && a.userId === 'local-mcp-test-user')).length, deployments: store.data.deployments.filter(d => ids.has(d.projectId)).length, members: 1, errors: 0, databaseRecords: store.data.products.filter(p => ids.has(p.projectId)).length }; });
   app.post('/api/v1/projects', async (request, reply) => {
     const uid = auth(request); const body = z.object({ name: z.string().trim().min(1).max(200) }).parse(request.body); const date = now();
     const projectId = store.id(); const p: Project = { id: projectId, ownerId: uid, name: body.name, environment: 'development', publicClientId: `aw_public_${projectId.replaceAll('-', '')}`, previewUrl: previewUrl(projectId), productionUrl: `https://app.appweave.local/${projectId}`, createdAt: date, updatedAt: date }; const settings: ProjectSettings = { projectId, name: p.name, allowedOrigins: [], usageLimit: 10000, lifecycleStatus: 'active', environment: p.environment, updatedAt: date }; await store.commit(db => { db.projects.push(p); db.projectSettings.push(settings); }); await audit('project.created', p.id, uid, request.id); return reply.code(201).send(p);
