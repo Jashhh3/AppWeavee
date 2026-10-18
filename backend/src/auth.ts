@@ -12,7 +12,7 @@ export function userId(request: FastifyRequest, secret: string, cookieName = 'ap
   const cookieToken = (request as FastifyRequest & { cookies?: Record<string, string> }).cookies?.[cookieName];
   const raw = header?.startsWith('Bearer ') ? header.slice(7).trim() : cookieToken;
   if (!raw) throw Object.assign(new Error('Authentication required'), { statusCode: 401, code: 'UNAUTHENTICATED' });
-  if (header?.startsWith('Bearer ') && raw.startsWith('aw_pat_') && store) {
+  if (header?.startsWith('Bearer ') && (raw.startsWith('aw_pat_') || raw.startsWith('aw_mcp_')) && store) {
     const digest = createHash('sha256').update(raw).digest('hex');
     const digestBytes = Buffer.from(digest, 'hex');
     const records = [...store.data.personalAccessTokens, ...store.data.mcpTokens];

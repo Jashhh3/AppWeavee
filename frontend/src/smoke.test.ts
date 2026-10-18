@@ -17,3 +17,11 @@ describe("NVIDIA provider configuration",()=>{
     ]);
   });
 });
+
+describe('MCP connection configuration',()=>{
+  it('builds a standard streamable HTTP client config without storing secrets',async()=>{
+    const {mcpClientConfig,mcpEndpoint}=await import('./App');
+    expect(mcpEndpoint()).toMatch(/\/mcp$/);
+    expect(mcpClientConfig('https://example.test/mcp','aw_mcp_demo')).toEqual({mcpServers:{appweave:{url:'https://example.test/mcp',headers:{Authorization:'Bearer aw_mcp_demo'}}}});
+  });
+});

@@ -33,7 +33,7 @@ const sanitizeFields = (value: unknown): Record<string, unknown> => {
   return (clean(value) as Record<string, unknown>) ?? {};
 };
 const preferencesInput = z.object({ selectedProjectId: z.string().uuid().nullable().optional(), selectedProvider: z.enum(['gemini', 'openai', 'openrouter', 'groq', 'nvidia']).nullable().optional(), selectedModel: z.string().trim().min(1).max(200).nullable().optional() }).strict();
-const mcpTokenView = (item: any) => ({ id: item.id, name: item.name, tokenPrefix: item.tokenPrefix, createdAt: item.createdAt, lastUsedAt: item.lastUsedAt ?? null, revokedAt: item.revokedAt ?? null });
+const mcpTokenView = (item: any) => ({ id: item.id, name: item.name, tokenPrefix: item.tokenPrefix, createdAt: item.createdAt, lastUsedAt: item.lastUsedAt ?? null, revokedAt: item.revokedAt ?? null, status: item.revokedAt ? 'revoked' : 'active' });
   const providerView = (c: AIProviderConfig) => ({ provider: c.provider, baseUrl: c.baseUrl, model: c.model, configured: Boolean(c.keyConfigured && c.keyCiphertext), key: c.keyConfigured && c.keyCiphertext ? `••••••••${c.keyLast4 ?? ''}` : null, updatedAt: c.updatedAt });
 const redact = (value: string, secrets: string[] = []) => { let result = value.replace(/(?:api[_ -]?key|token|secret|password)\s*[:=]\s*[^\s,;}]+/gi, '$1: [redacted]'); for (const secret of secrets.filter(x => x.length > 3)) result = result.split(secret).join('[redacted]'); return result; };
 const appVersion = process.env.APP_VERSION ?? '1.0.0';
