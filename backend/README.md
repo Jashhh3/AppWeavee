@@ -21,7 +21,16 @@ Run the complete offline check with `npm test` (or `npm run typecheck`). Docker 
 
 ## Local MCP connector
 
-`POST /mcp` exposes a small authenticated MCP JSON-RPC connector for local clients. It accepts the JWT returned by `/api/v1/auth/register` or `/api/v1/auth/login` as `Authorization: Bearer <token>` (the same token accepted by the REST API); cookie-only sessions are not used by MCP clients. The connector supports `initialize`, `ping`, `tools/list`, and `tools/call` for the `appweave_health` tool. Notifications return HTTP `202` with an empty body. Invalid or unknown JSON-RPC requests use standard JSON-RPC error objects.
+`POST /mcp` exposes an authenticated MCP JSON-RPC connector for local clients. It accepts the JWT returned by `/api/v1/auth/register` or `/api/v1/auth/login` as `Authorization: Bearer <token>` (the same token accepted by the REST API); cookie-only sessions are not used by MCP clients.
+
+The connector supports `initialize`, `ping`, `tools/list`, and `tools/call` for these project tools:
+
+- `list_projects`, `create_project`, `get_project`
+- `list_files`, `read_file`, `search_code`
+- `write_file`, `apply_patch`, `rename_file`, `delete_file`
+- `create_checkpoint`
+
+All project tools enforce ownership. File paths are restricted to the selected project's workspace; absolute paths, traversal, null bytes, and symlink traversal are rejected. Writes are audited, and checkpoints are stored through the existing Git-backed version repository. Notifications return HTTP `202` with an empty body. Invalid or unknown JSON-RPC requests use standard JSON-RPC error objects.
 
 Example local client configuration (replace the token with a locally generated session token; do not commit it):
 

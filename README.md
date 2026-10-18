@@ -21,7 +21,7 @@ docker compose up --build -d
 Dashboard: `http://localhost:8080`
 API health: `http://localhost:3000/health`
 
-Local MCP clients can connect to `http://localhost:3000/mcp` using `Authorization: Bearer <JWT_FROM_LOGIN>`. The MCP endpoint uses the same JWT sessions as the REST API and supports initialization, tool discovery, and the authenticated `appweave_health` tool. See `backend/README.md#local-mcp-connector` for a client configuration example.
+Local MCP clients can connect to `http://localhost:3000/mcp` using `Authorization: Bearer <JWT_FROM_LOGIN>`. The MCP endpoint uses the same JWT sessions as the REST API and exposes project discovery, project creation, safe file read/write/search, file rename/delete, and Git-backed checkpoint tools. See `backend/README.md#local-mcp-connector` for a client configuration example.
 
 To inspect services:
 
