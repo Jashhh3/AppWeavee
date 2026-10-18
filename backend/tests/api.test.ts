@@ -79,7 +79,7 @@ describe('AppWeave API', () => {
   });
 
   it('versions specifications and records deployment metadata', async () => {
-    const auth = { authorization: `Bearer ${await register('deploy@example.com')}` }; const p = await app.inject({ method: 'POST', url: '/api/v1/projects', headers: auth, payload: { name: 'Deploy' } }); const id = p.json().id;
+    const auth = { authorization: `Bearer ${await register('deploy@example.com')}` }; const p = await app.inject({ method: 'POST', url: '/api/v1/projects', headers: auth, payload: { name: 'Deploy' } }); const id = p.json().id; expect(p.json().previewUrl).toBe(`http://localhost:3000/preview/${id}`); expect((await app.inject({ method: 'GET', url: '/api/v1/projects', headers: auth })).json().projects[0].previewUrl).toBe(`http://localhost:3000/preview/${id}`);
     const spec = await app.inject({ method: 'POST', url: `/api/v1/projects/${id}/specifications/versions`, headers: auth, payload: { schema: { Product: { sku: 'string' } } } }); expect(spec.json().version).toBe(1);
     const dep = await app.inject({ method: 'POST', url: `/api/v1/projects/${id}/deployments`, headers: auth, payload: { environment: 'preview', version: 1 } }); expect(dep.statusCode).toBe(200);
     expect(dep.json().url).toContain(`/preview/${id}`);
