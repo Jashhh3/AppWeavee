@@ -10,7 +10,7 @@ import type { Project, Product, Deployment, UserPreferences, AIBuildDraft } from
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { DEFAULT_PROVIDER_RETRY_AFTER_SECONDS, decryptProviderKey, encryptProviderKey, HttpAIProvider, resolveAIProviderTimeoutMs } from './ai.js';
+import { DEFAULT_AI_PROVIDER_TIMEOUT_MS, DEFAULT_PROVIDER_RETRY_AFTER_SECONDS, decryptProviderKey, encryptProviderKey, HttpAIProvider, resolveAIProviderTimeoutMs } from './ai.js';
 import { ProjectVersionRepo, type VersionFiles } from './versions.js';
 import type { Snapshot, AIProviderName, AIProviderConfig, ProjectSettings } from './types.js';
 import { normalizeApplicationSpec, parseProviderSpec } from './application-spec.js';
@@ -42,7 +42,7 @@ export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; wo
   const store = await new Store(opts.dataFile ?? process.env.DATA_FILE ?? './data/appweave.json').load();
   const encryptionKey = opts.encryptionKey ?? process.env.AI_ENCRYPTION_KEY ?? (process.env.NODE_ENV === 'test' ? 'test-only-development-encryption-key' : undefined);
   if (!encryptionKey) throw new Error('AI_ENCRYPTION_KEY is required');
-  const providerFor = (config: AIProviderConfig) => { if (!config.keyCiphertext) throw bad('Provider credentials are unavailable; reconfigure this provider', 422, 'PROVIDER_KEY_UNAVAILABLE'); return new HttpAIProvider(config.provider, config, decryptProviderKey(config.keyCiphertext, encryptionKey), opts.fetch, opts.aiTimeoutMs ?? resolveAIProviderTimeoutMs(process.env.AI_PROVIDER_TIMEOUT_MS, 60_000)); };
+  const providerFor = (config: AIProviderConfig) => { if (!config.keyCiphertext) throw bad('Provider credentials are unavailable; reconfigure this provider', 422, 'PROVIDER_KEY_UNAVAILABLE'); return new HttpAIProvider(config.provider, config, decryptProviderKey(config.keyCiphertext, encryptionKey), opts.fetch, opts.aiTimeoutMs ?? resolveAIProviderTimeoutMs(process.env.AI_PROVIDER_TIMEOUT_MS, DEFAULT_AI_PROVIDER_TIMEOUT_MS)); };
   const workspaceRoot = opts.workspaceRoot ?? process.env.PROJECT_WORKSPACE_ROOT ?? './data/projects';
   const repos = new Map<string, ProjectVersionRepo>();
   const repoFor = (id: string) => { let repo = repos.get(id); if (!repo) { repo = new ProjectVersionRepo(workspaceRoot, id); repos.set(id, repo); } return repo; };

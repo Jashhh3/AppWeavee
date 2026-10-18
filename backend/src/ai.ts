@@ -3,7 +3,7 @@ import type { AIProviderConfig, AIProviderName } from './types.js';
 export interface AIProvider { readonly name: AIProviderName; generate(prompt: string): Promise<{ output: string; configured: boolean }>; test(): Promise<{ reachable: boolean; message: string }>; }
 export type OpenRouterModel = { id: string; name: string; context_length: number; supported_parameters: string[] };
 type FetchLike = typeof fetch;
-export const DEFAULT_AI_PROVIDER_TIMEOUT_MS = 60_000;
+export const DEFAULT_AI_PROVIDER_TIMEOUT_MS = 180_000;
 export const DEFAULT_PROVIDER_RETRY_AFTER_SECONDS = 30;
 export const MAX_PROVIDER_RETRY_AFTER_SECONDS = 300;
 export function boundedRetryAfterSeconds(value: string | null | undefined, now = Date.now()): number | undefined {
