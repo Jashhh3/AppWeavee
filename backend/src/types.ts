@@ -1,5 +1,6 @@
 export type User = { id: string; email: string; passwordHash: string; createdAt: string };
 export type UserPreferences = { userId: string; selectedProjectId?: string | null; selectedProvider?: AIProviderName | null; selectedModel?: string | null; updatedAt: string };
+export type MCPToken = { id: string; userId: string; name: string; tokenHash: string; tokenPrefix: string; createdAt: string; lastUsedAt?: string; revokedAt?: string };
 export type Project = { id: string; ownerId: string; name: string; environment: 'development'|'preview'|'production'; publicClientId: string; previewUrl: string; productionUrl: string; createdAt: string; updatedAt: string };
 export type ProjectSettings = { projectId: string; name: string; allowedOrigins: string[]; usageLimit: number; lifecycleStatus: 'active'|'paused'|'archived'; environment: 'development'|'preview'|'production'; updatedAt: string };
 export type AIProviderName = 'gemini'|'openai'|'openrouter'|'groq'|'nvidia';
