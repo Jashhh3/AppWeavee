@@ -18,6 +18,15 @@ describe('AppWeave API', () => {
     expect((await app.inject({ method: 'GET', url: `/api/v1/projects/${id}`, headers: { authorization: `Bearer ${b}` } })).statusCode).toBe(404);
     const unauth = await app.inject({ method: 'GET', url: '/api/v1/projects' }); expect(unauth.statusCode).toBe(401);
   });
+  it('serves MCP JSON-RPC over the existing JWT bearer session', async () => {
+    const jwt = await register('mcp@example.com');
+    const unauthorized = await app.inject({ method: 'POST', url: '/mcp', payload: { jsonrpc: '2.0', id: 1, method: 'initialize' } });
+    expect(unauthorized.statusCode).toBe(401); expect(unauthorized.headers['www-authenticate']).toBe('Bearer'); expect(unauthorized.json().error.code).toBe(-32001);
+    const initialized = await app.inject({ method: 'POST', url: '/mcp', headers: { authorization: `Bearer ${jwt}` }, payload: { jsonrpc: '2.0', id: 1, method: 'initialize' } });
+    expect(initialized.statusCode).toBe(200); expect(initialized.json()).toMatchObject({ jsonrpc: '2.0', id: 1, result: { protocolVersion: '2024-11-05', capabilities: { tools: {} } } });
+    const call = await app.inject({ method: 'POST', url: '/mcp', headers: { authorization: `Bearer ${jwt}` }, payload: { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'appweave_health' } } });
+    expect(call.statusCode).toBe(200); expect(call.json()).toMatchObject({ result: { isError: false, structuredContent: { status: 'ok' } } });
+  });
   it('supports HttpOnly cookie sessions, refresh-style me, logout, and isolated preferences', async () => {
     const first = await app.inject({ method: 'POST', url: '/api/v1/auth/register', payload: { email: 'cookie-a@example.com', password: 'correct horse battery staple' } });
     expect(first.statusCode).toBe(201);

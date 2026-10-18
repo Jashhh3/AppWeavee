@@ -19,6 +19,25 @@ Run the complete offline check with `npm test` (or `npm run typecheck`). Docker 
 
 `GET /health` is unauthenticated. SDK routes are under `/api/v1`: register/login, owned project listing and creation, project-scoped Product CRUD, specification versions, preview/production deployment metadata, Git-backed project versions (snapshots), changed-file comparison, validated rollback, audit logs, and authenticated AI generation through configured Gemini, OpenAI, OpenRouter, or Groq providers. Provider keys are encrypted at rest with AES-256-GCM and are never returned or logged. Set `AI_ENCRYPTION_KEY` before starting the server (tests use an explicit test key). Register/login also sets an HttpOnly `appweave_session` cookie (SameSite=Lax); configure `SESSION_COOKIE_SECURE` and `SESSION_COOKIE_MAX_AGE` for deployment. `GET /api/v1/auth/me` reads either the cookie or `Authorization: Bearer <token>`, and `POST /api/v1/auth/logout` clears the cookie. Browser clients should send credentials and an allowed `Origin`; state-changing requests with a disallowed Origin are rejected. User preferences are available at `GET/PATCH /api/v1/me/preferences` and are isolated by authenticated user. Send `Authorization: Bearer <token>` for SDK compatibility. All errors use `{error:{code,message,requestId}}`; rate limiting and configurable CORS origin checks are enabled.
 
+## Local MCP connector
+
+`POST /mcp` exposes a small authenticated MCP JSON-RPC connector for local clients. It accepts the JWT returned by `/api/v1/auth/register` or `/api/v1/auth/login` as `Authorization: Bearer <token>` (the same token accepted by the REST API); cookie-only sessions are not used by MCP clients. The connector supports `initialize`, `ping`, `tools/list`, and `tools/call` for the `appweave_health` tool. Notifications return HTTP `202` with an empty body. Invalid or unknown JSON-RPC requests use standard JSON-RPC error objects.
+
+Example local client configuration (replace the token with a locally generated session token; do not commit it):
+
+```json
+{
+  "mcpServers": {
+    "appweave-local": {
+      "url": "http://localhost:3000/mcp",
+      "headers": { "Authorization": "Bearer <JWT_FROM_LOGIN>" }
+    }
+  }
+}
+```
+
+Start the backend with `npm run dev` or `npm start`, obtain a token by logging in, and point an MCP-compatible client at the URL above. The local connector is intended for development; use a strong `JWT_SECRET` and TLS before exposing it beyond localhost.
+
 Project versions are stored in server-owned repositories below `PROJECT_WORKSPACE_ROOT` (one repository per project); only generated project specification state is committed, never backend source. If Git is unavailable, version metadata and file content remain usable through the JSON store fallback. Rollback validates the target before creating a new version and does not rewind products or other application records.
 
 The file-backed store is intentionally dependency-free and persists at `DATA_FILE`. It provides atomic-in-process writes and ownership checks on every project-scoped route. It is not intended as a horizontally concurrent production database.

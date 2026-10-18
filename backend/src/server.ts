@@ -14,6 +14,7 @@ import { DEFAULT_AI_PROVIDER_TIMEOUT_MS, DEFAULT_PROVIDER_RETRY_AFTER_SECONDS, d
 import { ProjectVersionRepo, type VersionFiles } from './versions.js';
 import type { Snapshot, AIProviderName, AIProviderConfig, ProjectSettings } from './types.js';
 import { normalizeApplicationSpec, parseProviderSpec } from './application-spec.js';
+import { registerMcpRoutes } from './mcp.js';
 
 const productInput = z.object({ name: z.string().trim().min(1).max(200), sku: z.string().trim().min(1).max(80), price: z.number().finite().nonnegative(), description: z.string().max(2000).optional() });
 const specInput = z.object({ schema: z.object({ entities: z.record(z.object({ fields: z.record(z.string()), permissions: z.record(z.array(z.string())).optional() })).default({}), relationships: z.array(z.record(z.string())).default([]), roles: z.array(z.string()).default(['admin']), api: z.record(z.unknown()).default({}), frontend: z.record(z.unknown()).default({}) }) });
@@ -77,6 +78,8 @@ export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; wo
   const cookieSecure = process.env.SESSION_COOKIE_SECURE === 'true';
   const cookieMaxAge = Number(process.env.SESSION_COOKIE_MAX_AGE ?? 604800);
   const setSession = (reply: any, uid: string) => reply.setCookie(cookieName, token(uid, secret), { httpOnly: true, sameSite: 'lax', secure: cookieSecure, path: '/', maxAge: Number.isFinite(cookieMaxAge) && cookieMaxAge > 0 ? cookieMaxAge : 604800 });
+
+  registerMcpRoutes(app, { authenticate: auth, health: context => ({ status: 'ok', service: 'appweave-backend', userId: context.userId, version: appVersion }) });
 
   app.get('/health', async () => ({ status: 'ok', service: 'appweave-backend', version: appVersion, time: now(), storage: 'file-backed-local', providers: [...new Map(store.data.providerConfigs.map(c => [c.provider, { provider: c.provider, baseUrl: c.baseUrl, model: c.model, configured: Boolean(c.keyConfigured && c.keyCiphertext) }])).values()] }));
   app.get('/api/v1/auth/me', async request => { const uid = auth(request); const u = store.data.users.find(x => x.id === uid); if (!u) throw bad('User not found', 404, 'NOT_FOUND'); return { user: { id: u.id, email: u.email } }; });
