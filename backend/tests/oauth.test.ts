@@ -29,6 +29,10 @@ describe('OAuth 2.1 PKCE connector', () => {
     expect(exchanged.statusCode).toBe(200); expect(exchanged.json()).toMatchObject({ token_type: 'Bearer', expires_in: 300 });
     const access = exchanged.json().access_token;
     const mcp = await app.inject({ method: 'POST', url: '/mcp', headers: { authorization: `Bearer ${access}` }, payload: { jsonrpc: '2.0', id: 1, method: 'initialize' } }); expect(mcp.statusCode).toBe(200);
+    const created = await app.inject({ method: 'POST', url: '/mcp', headers: { authorization: `Bearer ${access}` }, payload: { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'create_project', arguments: { name: 'ChatGPT project' } } } });
+    expect(created.statusCode).toBe(200); expect(created.json().result.structuredContent.previewUrl).toContain('/preview/');
+    const dashboardProjects = await app.inject({ method: 'GET', url: '/api/v1/projects', headers: { cookie } });
+    expect(dashboardProjects.json().projects).toEqual(expect.arrayContaining([expect.objectContaining({ id: created.json().result.structuredContent.id, name: 'ChatGPT project' })]));
     const replay = await app.inject({ method: 'POST', url: '/oauth/token', payload: { grant_type: 'authorization_code', client_id: client.client_id, code, redirect_uri: 'https://chatgpt.com/callback', code_verifier: verifier } }); expect(replay.statusCode).toBe(400);
     expect((await app.inject({ method: 'POST', url: '/oauth/token', payload: { grant_type: 'authorization_code', client_id: client.client_id, code: 'not-a-code', redirect_uri: 'https://chatgpt.com/callback', code_verifier: 'wrong' } })).statusCode).toBe(400);
     const refreshed = await app.inject({ method: 'POST', url: '/oauth/token', payload: { grant_type: 'refresh_token', client_id: client.client_id, refresh_token: exchanged.json().refresh_token } }); expect(refreshed.statusCode).toBe(200); expect(refreshed.json().access_token).toBeTruthy();
