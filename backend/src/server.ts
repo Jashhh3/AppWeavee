@@ -15,6 +15,7 @@ import { ProjectVersionRepo, type VersionFiles } from './versions.js';
 import type { Snapshot, AIProviderName, AIProviderConfig, ProjectSettings } from './types.js';
 import { normalizeApplicationSpec, parseProviderSpec } from './application-spec.js';
 import { registerMcpRoutes } from './mcp.js';
+import { registerOAuthRoutes } from './oauth.js';
 
 const productInput = z.object({ name: z.string().trim().min(1).max(200), sku: z.string().trim().min(1).max(80), price: z.number().finite().nonnegative(), description: z.string().max(2000).optional() });
 const specInput = z.object({ schema: z.object({ entities: z.record(z.object({ fields: z.record(z.string()), permissions: z.record(z.array(z.string())).optional() })).default({}), relationships: z.array(z.record(z.string())).default([]), roles: z.array(z.string()).default(['admin']), api: z.record(z.unknown()).default({}), frontend: z.record(z.unknown()).default({}) }) });
@@ -242,6 +243,7 @@ export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; wo
     try { await store.commit(db => { db.specs.push(spec); db.projectMemory.push(...mem); db.graphNodes.push(n1, n2); db.graphEdges.push({ id: store.id(), projectId: p.id, from: n1.id, to: n2.id, type: 'produces', createdAt: now() }); db.buildHistory.push({ id: store.id(), projectId: p.id, specVersion: spec.version, stages: [...stages, { name: 'persist_context', status: 'completed' }], createdAt: now(), createdBy: uid }); }); draft.status = 'ready'; draft.stage = 'ready'; draft.attempts = attempts; draft.applicationSpec = { schema: parsed.schema }; draft.output = redact(output, [decryptProviderKey(config.keyCiphertext!, encryptionKey)]); draft.specVersion = spec.version; draft.diagnostics = []; delete draft.retryAfter; delete draft.nextRetryAt; draft.updatedAt = now(); await store.commit(db => db.aiBuildDrafts); } catch (error) { stages.push({ name: 'persist_context', status: 'failed', detail: 'Generated result could not be saved' }); draft.status = 'failed'; draft.stage = 'persist_context'; draft.attempts = attempts; draft.diagnostics = [{ code: 'persistence_failed', message: 'The generated specification could not be saved.' }]; draft.updatedAt = now(); await store.commit(db => db.aiBuildDrafts); throw aiFailure('persist_context', request.id, error); }
     return { provider: config.provider, configured: true, output: redact(output, [decryptProviderKey(config.keyCiphertext!, encryptionKey)]), applicationSpec: { schema: parsed.schema }, diagnostics: [], attempts, stages, specVersion: spec.version };
   });
+  registerOAuthRoutes(app, store, secret, cookieName);
   registerMcpRoutes({ app, store, workspaceRoot, secret, cookieName, repoFor, audit, mcpUserId: mcpUser });
   return app;
 }
