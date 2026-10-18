@@ -1,33 +1,19 @@
-import 'dotenv/config';
-import ngrok from '@ngrok/ngrok';
+import { spawn } from 'node:child_process';
 
+// Use the installed ngrok CLI rather than the native npm SDK. This avoids
+// platform-specific node_modules conflicts when the workspace is shared by
+// Windows and Linux containers.
 const addr = process.env.NGROK_ADDR ?? `localhost:${process.env.PORT ?? '3000'}`;
 const domain = process.env.NGROK_DOMAIN;
+const executable = process.platform === 'win32' ? 'ngrok.exe' : 'ngrok';
+const args = ['http', addr];
+if (domain) args.push('--url', `https://${domain}`);
 
-if (!process.env.NGROK_AUTHTOKEN && process.env.NGROK_AUTHTOKEN_FROM_ENV !== 'false') {
-  throw new Error('Set NGROK_AUTHTOKEN in backend/.env or configure ngrok globally before starting the tunnel.');
-}
-
-const forwarder = await ngrok.forward({
-  addr,
-  authtoken: process.env.NGROK_AUTHTOKEN,
-  ...(domain ? { domain } : {}),
+const child = spawn(executable, args, { stdio: 'inherit', windowsHide: false });
+child.once('error', error => {
+  console.error(`Unable to start ${executable}. Install ngrok and run "ngrok config add-authtoken <token>" once.`, error.message);
+  process.exitCode = 1;
 });
-
-console.log(`AppWeave is available at ${forwarder.url()}`);
-console.log(`MCP endpoint: ${forwarder.url()}/mcp`);
-console.log('Press Ctrl+C to stop the tunnel.');
-
-const keepAlive = setInterval(() => {}, 60_000);
-
-const shutdown = async () => {
-  clearInterval(keepAlive);
-  await ngrok.disconnect();
-  await ngrok.kill();
-  process.exit(0);
-};
-
-// Keep the tunnel process alive. Node 24 exits on an indefinitely pending
-// top-level await, so use a real event-loop handle instead.
-process.once('SIGINT', shutdown);
-process.once('SIGTERM', shutdown);
+child.once('exit', (code, signal) => {
+  if (signal !== 'SIGINT' && signal !== 'SIGTERM') process.exitCode = code ?? 1;
+});
