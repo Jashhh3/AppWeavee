@@ -30,6 +30,23 @@ describe('AI provider error mapping', () => {
 });
 
 
+describe('NVIDIA OpenAI-compatible provider', () => {
+  it('uses NVIDIA defaults as an OpenAI-compatible chat endpoint', async () => {
+    let requestedUrl = '';
+    let requestedHeaders: Record<string, string> | undefined;
+    const nvidiaConfig: AIProviderConfig = { id: 'id', projectId: 'project', provider: 'nvidia', baseUrl: 'https://integrate.api.nvidia.com/v1', model: 'meta/llama-3.1-8b-instruct', keyConfigured: true, keyCiphertext: 'cipher', updatedAt: new Date().toISOString() };
+    const nvidia = new HttpAIProvider('nvidia', nvidiaConfig, 'nvidia-test-key', async (url, options) => {
+      requestedUrl = String(url);
+      requestedHeaders = options?.headers as Record<string, string>;
+      return new Response(JSON.stringify({ choices: [{ message: { content: '{"schema":{}}' } }] }), { status: 200 });
+    });
+
+    await expect(nvidia.generate('prompt')).resolves.toMatchObject({ output: '{"schema":{}}', configured: true });
+    expect(requestedUrl).toBe('https://integrate.api.nvidia.com/v1/chat/completions');
+    expect(requestedHeaders).toMatchObject({ authorization: 'Bearer nvidia-test-key', 'content-type': 'application/json' });
+  });
+});
+
 describe('OpenAI-compatible response normalization', () => {
   it('reads content arrays and reasoning fallbacks', async () => {
     const arrayProvider = provider(async () => new Response(JSON.stringify({ choices: [{ message: { content: [{ type: 'text', text: '{\"ok\":true}' }] } }] }), { status: 200 }) as Response);

@@ -30,8 +30,8 @@ describe('AppWeave API', () => {
     const me = await app.inject({ method: 'GET', url: '/api/v1/auth/me', headers: { cookie } });
     expect(me.statusCode).toBe(200); expect(me.json().user.email).toBe('cookie-a@example.com');
     const project = await app.inject({ method: 'POST', url: '/api/v1/projects', headers: { cookie }, payload: { name: 'Preferred' } });
-    const saved = await app.inject({ method: 'PATCH', url: '/api/v1/me/preferences', headers: { cookie }, payload: { selectedProjectId: project.json().id, selectedProvider: 'openai', selectedModel: 'gpt-4o-mini' } });
-    expect(saved.statusCode).toBe(200); expect(saved.json().preferences.selectedProjectId).toBe(project.json().id);
+    const saved = await app.inject({ method: 'PATCH', url: '/api/v1/me/preferences', headers: { cookie }, payload: { selectedProjectId: project.json().id, selectedProvider: 'nvidia', selectedModel: 'meta/llama-3.1-8b-instruct' } });
+    expect(saved.statusCode).toBe(200); expect(saved.json().preferences).toMatchObject({ selectedProjectId: project.json().id, selectedProvider: 'nvidia', selectedModel: 'meta/llama-3.1-8b-instruct' });
     const second = await app.inject({ method: 'POST', url: '/api/v1/auth/register', payload: { email: 'cookie-b@example.com', password: 'correct horse battery staple' } });
     const secondCookie = (Array.isArray(second.headers['set-cookie']) ? second.headers['set-cookie'][0] : String(second.headers['set-cookie'])).split(';')[0];
     expect((await app.inject({ method: 'GET', url: '/api/v1/me/preferences', headers: { cookie: secondCookie } })).json().preferences.selectedProjectId).toBeNull();
@@ -90,6 +90,14 @@ describe('AppWeave API', () => {
     expect(updated.statusCode).toBe(200); expect(updated.json()).toMatchObject({ name: 'Renamed', allowedOrigins: ['https://example.com'], usageLimit: 250, lifecycleStatus: 'paused', environment: 'preview' });
     expect((await app.inject({ method: 'GET', url: `/api/v1/projects/${id}/settings`, headers: other })).statusCode).toBe(404);
     expect((await app.inject({ method: 'PATCH', url: `/api/v1/projects/${id}/settings`, headers: owner, payload: { usageLimit: -1 } })).statusCode).toBe(400);
+  });
+
+  it('lists NVIDIA with its dedicated endpoint and safe default model', async () => {
+    const auth = { authorization: `Bearer ${await register('nvidia-defaults@example.com')}` };
+    const id = (await app.inject({ method: 'POST', url: '/api/v1/projects', headers: auth, payload: { name: 'NVIDIA' } })).json().id;
+    const response = await app.inject({ method: 'GET', url: `/api/v1/projects/${id}/providers`, headers: auth });
+    expect(response.statusCode).toBe(200);
+    expect(response.json().providers.find((provider: any) => provider.provider === 'nvidia')).toMatchObject({ provider: 'nvidia', baseUrl: 'https://integrate.api.nvidia.com/v1', model: 'meta/llama-3.1-8b-instruct', configured: false, key: null });
   });
 
   it('stores provider credentials without returning keys and isolates provider operations', async () => {
