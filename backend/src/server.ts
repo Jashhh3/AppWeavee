@@ -9,7 +9,7 @@ import { hash, verify, token, userId, ownedProject } from './auth.js';
 import type { Project, Product, Deployment, UserPreferences, AIBuildDraft } from './types.js';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { DEFAULT_AI_PROVIDER_TIMEOUT_MS, DEFAULT_PROVIDER_RETRY_AFTER_SECONDS, decryptProviderKey, encryptProviderKey, HttpAIProvider, resolveAIProviderTimeoutMs } from './ai.js';
 import { ProjectVersionRepo, type VersionFiles } from './versions.js';
 import type { Snapshot, AIProviderName, AIProviderConfig, ProjectSettings } from './types.js';
@@ -72,7 +72,7 @@ export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; wo
   app.addHook('onClose', async () => { await store.flush(); });
   app.addHook('onResponse', async (request) => { await store.commit(db => db.audits.push({ id: store.id(), userId: undefined, action: `${request.method} ${request.routeOptions.url}`, requestId: request.id, metadata: { status: request.routeOptions.url }, createdAt: now() })); });
   const cookieName = process.env.SESSION_COOKIE_NAME ?? 'appweave_session';
-  const auth = (request: any) => userId(request, secret, cookieName);
+  const auth = (request: any) => userId(request, secret, cookieName, store);
   const project = (request: any) => ownedProject(store, request.params.projectId, auth(request));
   const audit = async (action: string, projectId: string | undefined, uid: string, requestId: string, metadata: unknown = {}) => store.commit(db => db.audits.push({ id: store.id(), action, projectId, userId: uid, requestId, metadata, createdAt: now() }));
   const cookieSecure = process.env.SESSION_COOKIE_SECURE === 'true';
@@ -96,6 +96,28 @@ export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; wo
     return setSession(reply, u.id).send({ user: { id: u.id, email: u.email }, token: token(u.id, secret) });
   });
   app.post('/api/v1/auth/logout', async (_request, reply) => reply.clearCookie(cookieName, { httpOnly: true, sameSite: 'lax', secure: cookieSecure, path: '/' }).send({ ok: true }));
+  const tokenView = (item: any) => ({ id: item.id, prefix: item.prefix, last4: item.last4, createdAt: item.createdAt, revokedAt: item.revokedAt ?? null });
+  const listTokens = async (request: any) => { const uid = auth(request); return { tokens: store.data.personalAccessTokens.filter(item => item.userId === uid).map(tokenView) }; };
+  const createToken = async (request: any, reply: any) => {
+    const uid = auth(request); z.object({ name: z.string().trim().min(1).max(100).optional() }).strict().parse(request.body ?? {});
+    const raw = `aw_pat_${randomBytes(32).toString('base64url')}`; const createdAt = now();
+    const record = { id: store.id(), userId: uid, tokenHash: createHash('sha256').update(raw).digest('hex'), prefix: raw.slice(0, 16), last4: raw.slice(-4), createdAt };
+    await store.commit(db => db.personalAccessTokens.push(record)); await audit('auth.personal_access_token.created', undefined, uid, request.id, { tokenId: record.id, prefix: record.prefix });
+    return reply.code(201).send({ token: raw, ...tokenView(record) });
+  };
+  const revokeToken = async (request: any) => {
+    const uid = auth(request); const params = z.object({ tokenId: z.string().uuid() }).parse(request.params);
+    const record = store.data.personalAccessTokens.find(item => item.id === params.tokenId && item.userId === uid);
+    if (!record) throw bad('Token not found', 404, 'NOT_FOUND');
+    if (!record.revokedAt) { record.revokedAt = now(); await store.commit(db => db.personalAccessTokens); await audit('auth.personal_access_token.revoked', undefined, uid, request.id, { tokenId: record.id, prefix: record.prefix }); }
+    return { token: tokenView(record) };
+  };
+  app.get('/api/v1/auth/tokens', { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, listTokens);
+  app.post('/api/v1/auth/tokens', { config: { rateLimit: { max: 10, timeWindow: '1 minute' } } }, createToken);
+  app.delete('/api/v1/auth/tokens/:tokenId', { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, revokeToken);
+  app.get('/api/v1/me/tokens', listTokens);
+  app.post('/api/v1/me/tokens', createToken);
+  app.delete('/api/v1/me/tokens/:tokenId', revokeToken);
   app.get('/api/v1/me/preferences', async request => {
     const uid = auth(request); return { preferences: store.data.userPreferences.find(x => x.userId === uid) ?? { userId: uid, selectedProjectId: null, selectedProvider: null, selectedModel: null } };
   });
