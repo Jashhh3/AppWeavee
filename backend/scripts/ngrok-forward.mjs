@@ -25,3 +25,7 @@ const shutdown = async () => {
 
 process.once('SIGINT', shutdown);
 process.once('SIGTERM', shutdown);
+
+// Keep the tunnel process alive. Without an explicit wait, Node can exit after
+// the SDK finishes creating the endpoint, which leaves the reserved URL offline.
+await new Promise(() => {});
