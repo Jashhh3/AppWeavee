@@ -15,7 +15,8 @@ export function userId(request: FastifyRequest, secret: string, cookieName = 'ap
   if (header?.startsWith('Bearer ') && raw.startsWith('aw_pat_') && store) {
     const digest = createHash('sha256').update(raw).digest('hex');
     const digestBytes = Buffer.from(digest, 'hex');
-    const match = store.data.personalAccessTokens.find(record => {
+    const records = [...store.data.personalAccessTokens, ...store.data.mcpTokens];
+    const match = records.find(record => {
       if (record.revokedAt) return false;
       const stored = Buffer.from(record.tokenHash, 'hex');
       return stored.length === digestBytes.length && timingSafeEqual(stored, digestBytes);
