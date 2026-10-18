@@ -2,7 +2,7 @@ import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { access } from 'node:fs/promises';
+import { access, writeFile, mkdir } from 'node:fs/promises';
 import { buildApp } from '../src/server.js';
 import type { FastifyInstance } from 'fastify';
 
@@ -86,6 +86,37 @@ describe('AppWeave API', () => {
     const preview = await app.inject({ method: 'GET', url: `/preview/${id}`, headers: auth }); expect(preview.statusCode).toBe(200); expect(preview.headers['content-type']).toContain('text/html'); expect(preview.body).toContain('Deploy');
     const published = await app.inject({ method: 'POST', url: `/api/v1/projects/${id}/publish`, headers: auth, payload: { version: 1 } }); expect(published.statusCode).toBe(200);
     expect((await app.inject({ method: 'GET', url: `/api/v1/projects/${id}/audit-logs`, headers: auth })).json().logs.length).toBeGreaterThan(0);
+  });
+
+  it('builds project source into an isolated artifact and serves the authenticated preview', async () => {
+    const auth = { authorization: `Bearer ${await register('source-build@example.com')}` };
+    const p = await app.inject({ method: 'POST', url: '/api/v1/projects', headers: auth, payload: { name: 'Source Build' } });
+    const id = p.json().id;
+    await mkdir(join(dir, 'projects', id), { recursive: true });
+    await writeFile(join(dir, 'projects', id, 'index.html'), '<!doctype html><h1>source artifact</h1>', 'utf8');
+    await app.inject({ method: 'POST', url: `/api/v1/projects/${id}/specifications/versions`, headers: auth, payload: { schema: {} } });
+    const built = await app.inject({ method: 'POST', url: `/api/v1/projects/${id}/builds`, headers: auth, payload: { version: 1 } });
+    expect(built.statusCode).toBe(200);
+    const builds = await app.inject({ method: 'GET', url: `/api/v1/projects/${id}/builds`, headers: auth });
+    expect(builds.json().builds[0]).toMatchObject({ status: 'ready', runtime: 'artifact_only', artifacts: ['dist/index.html'] });
+    const preview = await app.inject({ method: 'GET', url: `/preview/${id}`, headers: auth });
+    expect(preview.statusCode).toBe(200);
+    expect(preview.body).toContain('source artifact');
+  });
+
+  it('persists bounded build failure state without activating a preview', async () => {
+    const auth = { authorization: `Bearer ${await register('failed-build@example.com')}` };
+    const p = await app.inject({ method: 'POST', url: '/api/v1/projects', headers: auth, payload: { name: 'Failed Build' } });
+    const id = p.json().id;
+    await mkdir(join(dir, 'projects', id), { recursive: true });
+    await writeFile(join(dir, 'projects', id, 'package.json'), '{ invalid', 'utf8');
+    await app.inject({ method: 'POST', url: `/api/v1/projects/${id}/specifications/versions`, headers: auth, payload: { schema: {} } });
+    const failed = await app.inject({ method: 'POST', url: `/api/v1/projects/${id}/builds`, headers: auth, payload: { version: 1 } });
+    expect(failed.statusCode).toBe(422);
+    expect(failed.json().error.code).toBe('BUILD_FAILED');
+    const builds = await app.inject({ method: 'GET', url: `/api/v1/projects/${id}/builds`, headers: auth });
+    expect(builds.json().builds[0]).toMatchObject({ status: 'failed', runtime: 'unavailable' });
+    expect(builds.json().builds[0].logs.at(-1)).toContain('invalid JSON');
   });
 
   it('manages owned project settings and validates updates', async () => {
