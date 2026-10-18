@@ -7,7 +7,8 @@ const addr = process.env.NGROK_ADDR ?? `localhost:${process.env.PORT ?? '3000'}`
 const domain = process.env.NGROK_DOMAIN;
 const executable = process.platform === 'win32' ? 'ngrok.exe' : 'ngrok';
 const args = ['http', addr];
-if (domain) args.push('--url', `https://${domain}`);
+// ngrok 3.3.x uses --domain; newer examples sometimes show --url.
+if (domain) args.push('--domain', domain);
 
 const child = spawn(executable, args, { stdio: 'inherit', windowsHide: false });
 child.once('error', error => {
