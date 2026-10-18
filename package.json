@@ -1,0 +1,9 @@
+{
+  "private": true,
+  "scripts": {
+    "mcp:tunnel": "node scripts/ngrok-mcp.mjs"
+  },
+  "dependencies": {
+    "@ngrok/ngrok": "^1.7.0"
+  }
+}
