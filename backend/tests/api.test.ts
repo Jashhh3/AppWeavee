@@ -7,8 +7,8 @@ import { buildApp } from '../src/server.js';
 import type { FastifyInstance } from 'fastify';
 
 describe('AppWeave API', () => {
-  let app: FastifyInstance; let dir: string; let openrouterUnavailable = false;
-  beforeEach(async () => { openrouterUnavailable = false; dir = await mkdtemp(join(tmpdir(), 'appweave-')); app = await buildApp({ dataFile: join(dir, 'db.json'), workspaceRoot: join(dir, 'projects'), jwtSecret: 'test-secret', encryptionKey: 'test-encryption-key', fetch: async (url) => { if (String(url).includes('/api/v1/models')) { if (openrouterUnavailable) throw new Error('connection refused'); return new Response(JSON.stringify({ data: [{ id: 'free/model', name: 'Free Model', context_length: 8192, supported_parameters: ['tools', 'response_format'], pricing: { prompt: '0', completion: '0' }, secret: 'do-not-return' }, { id: 'paid/model', name: 'Paid Model', context_length: 4096, supported_parameters: [], pricing: { prompt: '0.000001', completion: '0' } }] }), { status: 200, headers: { 'content-type': 'application/json' } }); } return new Response(JSON.stringify(String(url).includes('generativelanguage') ? { candidates: [{ content: { parts: [{ text: JSON.stringify({ schema: { entities: {}, relationships: [], roles: ['admin'], api: {}, frontend: {} } }) }] } }] } : { choices: [{ message: { content: JSON.stringify({ schema: { entities: {}, relationships: [], roles: ['admin'], api: {}, frontend: {} } }) } }] }), { status: 200, headers: { 'content-type': 'application/json' } }); } }); });
+  let app: FastifyInstance; let dir: string; let openrouterUnavailable = false; let providerFailure: { status?: number; timeout?: boolean; retryAfter?: string } | undefined;
+  beforeEach(async () => { openrouterUnavailable = false; providerFailure = undefined; dir = await mkdtemp(join(tmpdir(), 'appweave-')); app = await buildApp({ dataFile: join(dir, 'db.json'), workspaceRoot: join(dir, 'projects'), jwtSecret: 'test-secret', encryptionKey: 'test-encryption-key', fetch: async (url) => { if (providerFailure && !String(url).includes('/api/v1/models')) { if (providerFailure.timeout) throw Object.assign(new Error('timed out'), { name: 'TimeoutError' }); return new Response(JSON.stringify({ error: { message: 'provider secret=hidden' } }), { status: providerFailure.status ?? 429, headers: providerFailure.retryAfter ? { 'retry-after': providerFailure.retryAfter } : undefined }); } if (String(url).includes('/api/v1/models')) { if (openrouterUnavailable) throw new Error('connection refused'); return new Response(JSON.stringify({ data: [{ id: 'free/model', name: 'Free Model', context_length: 8192, supported_parameters: ['tools', 'response_format'], pricing: { prompt: '0', completion: '0' }, secret: 'do-not-return' }, { id: 'paid/model', name: 'Paid Model', context_length: 4096, supported_parameters: [], pricing: { prompt: '0.000001', completion: '0' } }] }), { status: 200, headers: { 'content-type': 'application/json' } }); } return new Response(JSON.stringify(String(url).includes('generativelanguage') ? { candidates: [{ content: { parts: [{ text: JSON.stringify({ schema: { entities: {}, relationships: [], roles: ['admin'], api: {}, frontend: {} } }) }] } }] } : { choices: [{ message: { content: JSON.stringify({ schema: { entities: {}, relationships: [], roles: ['admin'], api: {}, frontend: {} } }) } }] }), { status: 200, headers: { 'content-type': 'application/json' } }); } }); });
   afterEach(async () => { await app.close(); await rm(dir, { recursive: true, force: true }); });
   async function register(email: string) { const r = await app.inject({ method: 'POST', url: '/api/v1/auth/register', payload: { email, password: 'correct horse battery staple' } }); expect(r.statusCode).toBe(201); return r.json().token as string; }
   it('registers, authenticates, and keeps projects isolated', async () => {
@@ -134,6 +134,33 @@ describe('AppWeave API', () => {
     const owner = { authorization: `Bearer ${await register('gen-owner@example.com')}` }; const other = { authorization: `Bearer ${await register('gen-other@example.com')}` };
     const p = await app.inject({ method: 'POST', url: '/api/v1/projects', headers: owner, payload: { name: 'Owned' } }); const id = p.json().id;
     expect((await app.inject({ method: 'POST', url: '/api/v1/ai/generate', headers: other, payload: { projectId: id, prompt: 'x' } })).statusCode).toBe(404);
+  });
+
+  it('persists bounded 429 retry metadata and prevents rapid duplicate retries', async () => {
+    const auth = { authorization: `Bearer ${await register('retry@example.com')}` };
+    const id = (await app.inject({ method: 'POST', url: '/api/v1/projects', headers: auth, payload: { name: 'Retry' } })).json().id;
+    await app.inject({ method: 'PATCH', url: `/api/v1/projects/${id}/providers/openai`, headers: auth, payload: { baseUrl: 'https://provider.example/v1', model: 'retry-model', key: 'retry-secret' } });
+    const draft = await app.inject({ method: 'POST', url: `/api/v1/projects/${id}/ai/builds/drafts`, headers: auth, payload: { prompt: 'Retry me', provider: 'openai' } });
+    providerFailure = { status: 429, retryAfter: '999999' };
+    const failed = await app.inject({ method: 'POST', url: '/api/v1/ai/generate', headers: auth, payload: { projectId: id, draftId: draft.json().id, prompt: 'Retry me' } });
+    expect(failed.statusCode).toBe(429); expect(failed.headers['retry-after']).toBe('300'); expect(failed.json().error).toMatchObject({ code: 'PROVIDER_RATE_LIMITED', retryAfter: 300, attemptedProvider: 'openai', attemptedModel: 'retry-model' });
+    const latest = await app.inject({ method: 'GET', url: `/api/v1/projects/${id}/ai/builds/latest`, headers: auth });
+    expect(latest.json().build).toMatchObject({ retryAfter: 300, attemptedProvider: 'openai', attemptedModel: 'retry-model', status: 'failed' }); expect(latest.json().build.nextRetryAt).toBeTruthy();
+    const duplicate = await app.inject({ method: 'POST', url: '/api/v1/ai/generate', headers: auth, payload: { projectId: id, draftId: draft.json().id, prompt: 'Retry me' } });
+    expect(duplicate.statusCode).toBe(429); expect(duplicate.json().error.code).toBe('PROVIDER_RETRY_LATER');
+  });
+
+  it('persists timeout retry state and keeps drafts isolated by project owner', async () => {
+    const owner = { authorization: `Bearer ${await register('timeout@example.com')}` }; const other = { authorization: `Bearer ${await register('timeout-other@example.com')}` };
+    const id = (await app.inject({ method: 'POST', url: '/api/v1/projects', headers: owner, payload: { name: 'Timeout' } })).json().id;
+    await app.inject({ method: 'PATCH', url: `/api/v1/projects/${id}/providers/openai`, headers: owner, payload: { baseUrl: 'https://provider.example/v1', model: 'timeout-model', key: 'timeout-secret' } });
+    const draft = await app.inject({ method: 'POST', url: `/api/v1/projects/${id}/ai/builds/drafts`, headers: owner, payload: { prompt: 'Wait', provider: 'openai' } });
+    providerFailure = { timeout: true };
+    const failed = await app.inject({ method: 'POST', url: '/api/v1/ai/generate', headers: owner, payload: { projectId: id, draftId: draft.json().id, prompt: 'Wait' } });
+    expect(failed.statusCode).toBe(504); expect(failed.json().error).toMatchObject({ code: 'PROVIDER_TIMEOUT', retryAfter: 30 });
+    const latest = await app.inject({ method: 'GET', url: `/api/v1/projects/${id}/ai/builds/latest`, headers: owner });
+    expect(latest.json().build).toMatchObject({ retryAfter: 30, attemptedProvider: 'openai', attemptedModel: 'timeout-model' });
+    expect((await app.inject({ method: 'GET', url: `/api/v1/projects/${id}/ai/builds/latest`, headers: other })).statusCode).toBe(404);
   });
 
 });
