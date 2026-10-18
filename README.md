@@ -21,7 +21,7 @@ docker compose up --build -d
 Dashboard: `http://localhost:8080`
 API health: `http://localhost:3000/health`
 
-Local MCP clients can connect to `http://localhost:3000/mcp` using `Authorization: Bearer <JWT_FROM_LOGIN>`. The MCP endpoint uses the same JWT sessions as the REST API and exposes project discovery, project creation, safe file read/write/search, file rename/delete, and Git-backed checkpoint tools. See `backend/README.md#local-mcp-connector` for a client configuration example.
+MCP connections are managed from **Settings → MCP Connections**. Create a named connection token there, copy it once, and use the generated client configuration; raw tokens are never shown again. Local MCP clients connect to `http://localhost:3000/mcp` using that token as `Authorization: Bearer <MCP_TOKEN>`. The MCP endpoint exposes project discovery, project creation, safe file read/write/search, file rename/delete, and Git-backed checkpoint tools. See `backend/README.md#local-mcp-connector` for the API and client configuration details.
 
 For temporary external testing, the backend includes `npm run tunnel`, which forwards port 3000 through ngrok. Set `NGROK_AUTHTOKEN` and, optionally, `NGROK_DOMAIN` in the untracked `backend/.env`; never commit either value. This exposes the development backend publicly and does not replace the production OAuth setup.
 

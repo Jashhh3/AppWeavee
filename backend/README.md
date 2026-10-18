@@ -21,7 +21,18 @@ Run the complete offline check with `npm test` (or `npm run typecheck`). Docker 
 
 ## Local MCP connector
 
-`POST /mcp` exposes an authenticated MCP JSON-RPC connector for local clients. It accepts the JWT returned by `/api/v1/auth/register` or `/api/v1/auth/login` as `Authorization: Bearer <token>` (the same token accepted by the REST API); cookie-only sessions are not used by MCP clients.
+`POST /mcp` exposes an authenticated MCP JSON-RPC connector for local clients. The recommended credential is a dashboard-created MCP connection token, sent as `Authorization: Bearer <MCP_TOKEN>`; legacy AppWeave JWT bearer tokens remain supported for local development. Cookie-only sessions are not used by MCP clients.
+
+Create and manage connection tokens in **Settings → MCP Connections**, or use these authenticated REST endpoints:
+
+```text
+POST   /api/v1/mcp/tokens       { "name": "Claude local" }
+GET    /api/v1/mcp/tokens
+POST   /api/v1/mcp/tokens/:id/revoke
+POST   /api/v1/mcp/connection-test
+```
+
+The raw token is returned only by the create response and is never returned by list or revoke. The dashboard also generates a copyable MCP client configuration containing the endpoint and bearer header.
 
 The connector supports `initialize`, `ping`, `tools/list`, and `tools/call` for these project tools:
 
