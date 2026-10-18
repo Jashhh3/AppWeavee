@@ -10,6 +10,7 @@
     "dev": "tsx watch src/server.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/src/server.js",
+    "tunnel": "node scripts/ngrok-forward.mjs",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
@@ -24,7 +25,9 @@
     "zod": "^3.23.8"
   },
   "devDependencies": {
+    "@ngrok/ngrok": "^1.7.0",
     "@types/bcryptjs": "^2.4.6",
+    "@types/estree": "^1.0.9",
     "@types/jsonwebtoken": "^9.0.6",
     "@types/node": "^20.14.12",
     "tsx": "^4.16.2",

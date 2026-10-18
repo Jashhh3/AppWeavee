@@ -47,6 +47,18 @@ Example local client configuration (replace the token with a locally generated s
 
 Start the backend with `npm run dev` or `npm start`, obtain a token by logging in, and point an MCP-compatible client at the URL above. The local connector is intended for development; use a strong `JWT_SECRET` and TLS before exposing it beyond localhost.
 
+### Temporary ngrok tunnel
+
+For external MCP-client testing, configure ngrok outside Git and run the backend tunnel from this directory:
+
+```sh
+NGROK_AUTHTOKEN=replace-me
+NGROK_DOMAIN=your-reserved-domain.ngrok-free.app
+npm run tunnel
+```
+
+The script forwards `localhost:3000` by default and prints the public `/mcp` URL. Put the token and reserved domain in `backend/.env`, not in source files. A tunnel makes the development backend public, so use a temporary test account and stop it when testing is complete.
+
 Project versions are stored in server-owned repositories below `PROJECT_WORKSPACE_ROOT` (one repository per project); only generated project specification state is committed, never backend source. If Git is unavailable, version metadata and file content remain usable through the JSON store fallback. Rollback validates the target before creating a new version and does not rewind products or other application records.
 
 The file-backed store is intentionally dependency-free and persists at `DATA_FILE`. It provides atomic-in-process writes and ownership checks on every project-scoped route. It is not intended as a horizontally concurrent production database.

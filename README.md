@@ -23,7 +23,7 @@ API health: `http://localhost:3000/health`
 
 Local MCP clients can connect to `http://localhost:3000/mcp` using `Authorization: Bearer <JWT_FROM_LOGIN>`. The MCP endpoint uses the same JWT sessions as the REST API and exposes project discovery, project creation, safe file read/write/search, file rename/delete, and Git-backed checkpoint tools. See `backend/README.md#local-mcp-connector` for a client configuration example.
 
-For temporary external testing, the repository includes an ngrok SDK helper. Set `NGROK_AUTHTOKEN` in the current shell, start AppWeave, then run `npm run mcp:tunnel`. The helper prints the public HTTPS URL and `/mcp` endpoint without storing the ngrok token in the repository. This is for development only; production ChatGPT integration still requires AppWeave OAuth.
+For temporary external testing, the backend includes `npm run tunnel`, which forwards port 3000 through ngrok. Set `NGROK_AUTHTOKEN` and, optionally, `NGROK_DOMAIN` in the untracked `backend/.env`; never commit either value. This exposes the development backend publicly and does not replace the production OAuth setup.
 
 To inspect services:
 
