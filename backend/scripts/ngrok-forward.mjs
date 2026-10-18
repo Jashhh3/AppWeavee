@@ -18,17 +18,16 @@ console.log(`AppWeave is available at ${forwarder.url()}`);
 console.log(`MCP endpoint: ${forwarder.url()}/mcp`);
 console.log('Press Ctrl+C to stop the tunnel.');
 
+const keepAlive = setInterval(() => {}, 60_000);
+
 const shutdown = async () => {
+  clearInterval(keepAlive);
   await ngrok.disconnect();
   await ngrok.kill();
+  process.exit(0);
 };
 
-// Keep the tunnel process alive and resolve cleanly when the user stops it.
-await new Promise((resolve) => {
-  const stop = async () => {
-    await shutdown();
-    resolve();
-  };
-  process.once('SIGINT', stop);
-  process.once('SIGTERM', stop);
-});
+// Keep the tunnel process alive. Node 24 exits on an indefinitely pending
+// top-level await, so use a real event-loop handle instead.
+process.once('SIGINT', shutdown);
+process.once('SIGTERM', shutdown);
