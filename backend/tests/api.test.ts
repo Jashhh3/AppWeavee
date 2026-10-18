@@ -97,7 +97,7 @@ describe('AppWeave API', () => {
     const id = (await app.inject({ method: 'POST', url: '/api/v1/projects', headers: auth, payload: { name: 'NVIDIA' } })).json().id;
     const response = await app.inject({ method: 'GET', url: `/api/v1/projects/${id}/providers`, headers: auth });
     expect(response.statusCode).toBe(200);
-    expect(response.json().providers.find((provider: any) => provider.provider === 'nvidia')).toMatchObject({ provider: 'nvidia', baseUrl: 'https://integrate.api.nvidia.com/v1', model: 'meta/llama-3.1-8b-instruct', configured: false, key: null });
+    expect(response.json().providers.find((provider: any) => provider.provider === 'nvidia')).toMatchObject({ provider: 'nvidia', baseUrl: 'https://integrate.api.nvidia.com/v1', model: 'z-ai/glm-5.3-flash', configured: false, key: null });
   });
 
   it('stores provider credentials without returning keys and isolates provider operations', async () => {

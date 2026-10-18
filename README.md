@@ -128,6 +128,17 @@ Use the host's TLS reverse proxy and network policy for externally exposed deplo
 
 Gemini model availability depends on the provider account and API version. AppWeave includes selectable model IDs in the dashboard, including `gemini-3.8-flash`, `gemini-flash-latest`, `gemini-3.5-flash`, and `gemini-3.1-pro-preview`. Use **Settings → AI Providers → Test connection** to verify the saved key and selected model. Never paste provider API keys into chat, source files, screenshots, or Git; rotate a key immediately if it is exposed.
 
+## NVIDIA model configuration
+
+NVIDIA is available as an OpenAI-compatible provider. In **Settings → AI Providers**, choose **NVIDIA**, keep the default base URL `https://integrate.api.nvidia.com/v1` unless your deployment uses another compatible endpoint, and save an NVIDIA API key. AppWeave includes these selectable model IDs:
+
+- `z-ai/glm-5.3-flash`
+- `deepseek-ai/deepseek-v4.1-flash`
+- `meta/muse-glimmer-30b`
+- `poolside/laguna-xs-2.1`
+
+Model availability depends on the NVIDIA account and API access. Use **Test connection** before selecting a model for AI Builder. API keys are encrypted by the backend and are never returned to the browser after saving. If a key is exposed, revoke it in NVIDIA and create a replacement immediately; do not add keys to `.env.example`, source files, screenshots, or Git.
+
 ## Workspace layout
 
 - `backend/`: Fastify API, authorization, persistence, and tests
