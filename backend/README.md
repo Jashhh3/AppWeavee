@@ -58,6 +58,18 @@ Example local client configuration (replace the token with a locally generated s
 
 Start the backend with `npm run dev` or `npm start`, obtain a token by logging in, and point an MCP-compatible client at the URL above. The local connector is intended for development; use a strong `JWT_SECRET` and TLS before exposing it beyond localhost.
 
+### Local MCP test mode (explicit opt-in)
+
+For connector smoke tests where creating or pasting a token on every run is inconvenient, set **both** `NODE_ENV=development` (or `test`) and `APPWEAVE_MCP_LOCAL_TEST_MODE=true`. In this mode, only `POST /mcp` accepts requests without a bearer token and assigns them to the fixed local test identity `local-mcp-test-user`; normal REST routes still require authentication. The flag defaults to `false`, and the server refuses to activate it when `NODE_ENV=production`, so PAT, JWT, and OAuth bearer authentication remain unchanged by default.
+
+This mode is intentionally unsafe for anything beyond a local test process: anyone who can reach the MCP port can read or modify the local test identity's projects. Do not enable it on a shared host, tunnel, or production deployment. From the repository root, the one-command Docker path is:
+
+```sh
+./scripts/start-mcp-local.sh
+```
+
+It starts the Compose stack in development mode with the flag enabled and contains no secrets. Stop it with `docker compose down`; use `docker compose down -v` for a clean test reset. Remote team testing must use MCP connection tokens or OAuth/PAT authentication over a protected HTTPS deployment; this local bypass cannot safely provide shared remote access or per-user ownership.
+
 ### Temporary ngrok tunnel
 
 For external MCP-client testing, configure ngrok outside Git and run the backend tunnel from this directory:

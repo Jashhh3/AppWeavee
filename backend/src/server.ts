@@ -40,7 +40,7 @@ const redact = (value: string, secrets: string[] = []) => { let result = value.r
 const appVersion = process.env.APP_VERSION ?? '1.0.0';
 const aiFailure = (stage: string, requestId: string, cause: unknown, diagnostics: unknown[] = []) => { const source = cause as any; const provider = String(source?.code ?? '').startsWith('PROVIDER_'); const sourceDiagnostic = source?.code || source?.message ? [{ code: String(source?.code ?? 'generation_failed'), message: redact(String(source?.message ?? 'The AI generation pipeline failed before producing a result.')).slice(0, 300), provider: source?.provider, model: source?.model, retryAfter: source?.retryAfter }] : []; const safeDiagnostics = diagnostics.length || source?.diagnostics?.length || sourceDiagnostic.length ? [...diagnostics, ...(source?.diagnostics ?? []), ...sourceDiagnostic] : [{ code: stage === 'persist_context' ? 'persistence_failed' : 'generation_failed', message: stage === 'persist_context' ? 'The generated specification could not be saved. Retry the request and check server storage.' : 'The AI generation pipeline failed before producing a result. Retry the request.' }]; return Object.assign(new Error(provider ? source.message : 'AI generation failed'), { statusCode: provider ? source.statusCode : 500, code: provider ? source.code : 'AI_BUILD_FAILED', stage, requestId, diagnostics: safeDiagnostics }); };
 
-export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; workspaceRoot?: string; encryptionKey?: string; fetch?: typeof fetch; aiTimeoutMs?: number } = {}): Promise<FastifyInstance> {
+export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; workspaceRoot?: string; encryptionKey?: string; fetch?: typeof fetch; aiTimeoutMs?: number; mcpLocalTestMode?: boolean } = {}): Promise<FastifyInstance> {
   const secret = opts.jwtSecret ?? process.env.JWT_SECRET ?? 'development-only-change-me';
   const store = await new Store(opts.dataFile ?? process.env.DATA_FILE ?? './data/appweave.json').load();
   const encryptionKey = opts.encryptionKey ?? process.env.AI_ENCRYPTION_KEY ?? (process.env.NODE_ENV === 'test' ? 'test-only-development-encryption-key' : undefined);
@@ -244,7 +244,9 @@ export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; wo
     return { provider: config.provider, configured: true, output: redact(output, [decryptProviderKey(config.keyCiphertext!, encryptionKey)]), applicationSpec: { schema: parsed.schema }, diagnostics: [], attempts, stages, specVersion: spec.version };
   });
   registerOAuthRoutes(app, store, secret, cookieName);
-  registerMcpRoutes({ app, store, workspaceRoot, secret, cookieName, repoFor, audit, mcpUserId: mcpUser });
+  const requestedMcpLocalTestMode = opts.mcpLocalTestMode ?? process.env.APPWEAVE_MCP_LOCAL_TEST_MODE === 'true';
+  const mcpLocalTestMode = requestedMcpLocalTestMode && (process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'test');
+  registerMcpRoutes({ app, store, workspaceRoot, secret, cookieName, repoFor, audit, mcpUserId: mcpUser, allowUnauthenticated: mcpLocalTestMode });
   return app;
 }
 if (process.env.NODE_ENV !== 'test') buildApp().then(app => app.listen({ port: Number(process.env.PORT ?? 3000), host: '0.0.0.0' })).catch(err => { console.error(err); process.exit(1); });
