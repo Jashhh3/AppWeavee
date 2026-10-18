@@ -23,9 +23,12 @@ const shutdown = async () => {
   await ngrok.kill();
 };
 
-process.once('SIGINT', shutdown);
-process.once('SIGTERM', shutdown);
-
-// Keep the tunnel process alive. Without an explicit wait, Node can exit after
-// the SDK finishes creating the endpoint, which leaves the reserved URL offline.
-await new Promise(() => {});
+// Keep the tunnel process alive and resolve cleanly when the user stops it.
+await new Promise((resolve) => {
+  const stop = async () => {
+    await shutdown();
+    resolve();
+  };
+  process.once('SIGINT', stop);
+  process.once('SIGTERM', stop);
+});
