@@ -79,7 +79,6 @@ export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; wo
   const cookieMaxAge = Number(process.env.SESSION_COOKIE_MAX_AGE ?? 604800);
   const setSession = (reply: any, uid: string) => reply.setCookie(cookieName, token(uid, secret), { httpOnly: true, sameSite: 'lax', secure: cookieSecure, path: '/', maxAge: Number.isFinite(cookieMaxAge) && cookieMaxAge > 0 ? cookieMaxAge : 604800 });
 
-  registerMcpRoutes(app, { authenticate: auth, health: context => ({ status: 'ok', service: 'appweave-backend', userId: context.userId, version: appVersion }) });
 
   app.get('/health', async () => ({ status: 'ok', service: 'appweave-backend', version: appVersion, time: now(), storage: 'file-backed-local', providers: [...new Map(store.data.providerConfigs.map(c => [c.provider, { provider: c.provider, baseUrl: c.baseUrl, model: c.model, configured: Boolean(c.keyConfigured && c.keyCiphertext) }])).values()] }));
   app.get('/api/v1/auth/me', async request => { const uid = auth(request); const u = store.data.users.find(x => x.id === uid); if (!u) throw bad('User not found', 404, 'NOT_FOUND'); return { user: { id: u.id, email: u.email } }; });
@@ -215,6 +214,7 @@ export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; wo
     try { await store.commit(db => { db.specs.push(spec); db.projectMemory.push(...mem); db.graphNodes.push(n1, n2); db.graphEdges.push({ id: store.id(), projectId: p.id, from: n1.id, to: n2.id, type: 'produces', createdAt: now() }); db.buildHistory.push({ id: store.id(), projectId: p.id, specVersion: spec.version, stages: [...stages, { name: 'persist_context', status: 'completed' }], createdAt: now(), createdBy: uid }); }); draft.status = 'ready'; draft.stage = 'ready'; draft.attempts = attempts; draft.applicationSpec = { schema: parsed.schema }; draft.output = redact(output, [decryptProviderKey(config.keyCiphertext!, encryptionKey)]); draft.specVersion = spec.version; draft.diagnostics = []; delete draft.retryAfter; delete draft.nextRetryAt; draft.updatedAt = now(); await store.commit(db => db.aiBuildDrafts); } catch (error) { stages.push({ name: 'persist_context', status: 'failed', detail: 'Generated result could not be saved' }); draft.status = 'failed'; draft.stage = 'persist_context'; draft.attempts = attempts; draft.diagnostics = [{ code: 'persistence_failed', message: 'The generated specification could not be saved.' }]; draft.updatedAt = now(); await store.commit(db => db.aiBuildDrafts); throw aiFailure('persist_context', request.id, error); }
     return { provider: config.provider, configured: true, output: redact(output, [decryptProviderKey(config.keyCiphertext!, encryptionKey)]), applicationSpec: { schema: parsed.schema }, diagnostics: [], attempts, stages, specVersion: spec.version };
   });
+  registerMcpRoutes({ app, store, workspaceRoot, secret, cookieName, repoFor, audit });
   return app;
 }
 if (process.env.NODE_ENV !== 'test') buildApp().then(app => app.listen({ port: Number(process.env.PORT ?? 3000), host: '0.0.0.0' })).catch(err => { console.error(err); process.exit(1); });
