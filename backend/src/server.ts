@@ -89,21 +89,32 @@ export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; wo
   const mcpUser = (request: any) => auth(request);
   const project = (request: any) => ownedProject(store, request.params.projectId, auth(request));
   const audit = async (action: string, projectId: string | undefined, uid: string | undefined, requestId: string, metadata: unknown = {}) => store.commit(db => db.audits.push({ id: store.id(), action, projectId, userId: uid, requestId, metadata, createdAt: now() }));
-  const projectData = async (p: Project) => {
-    if (!p.database || !projectDatabases) return { products: store.data.products.filter(x => x.projectId === p.id), surveyResponses: store.data.surveyResponses.filter(x => x.projectId === p.id) };
-    const state = await projectDatabases.read(p.database);
-    return { products: Array.isArray(state.products) ? state.products as Product[] : [], surveyResponses: Array.isArray(state.surveyResponses) ? state.surveyResponses as SurveyResponse[] : [] };
+  const projectPrivateKeys = ['providerConfigs', 'specs', 'builds', 'deployments', 'snapshots', 'projectMemory', 'decisions', 'buildHistory', 'graphNodes', 'graphEdges', 'aiBuildDrafts', 'products', 'surveyResponses'] as const;
+  type ProjectPrivateKey = typeof projectPrivateKeys[number];
+  type ProjectState = Partial<Record<ProjectPrivateKey, any[]>>;
+  const projectState = async (p: Project): Promise<ProjectState> => {
+    if (p.database && projectDatabases) {
+      const stored = await projectDatabases.read(p.database);
+      return Object.fromEntries(projectPrivateKeys.map(key => [key, Array.isArray(stored[key]) ? stored[key] : []])) as ProjectState;
+    }
+    return Object.fromEntries(projectPrivateKeys.map(key => [key, (store.data as any)[key].filter((x: any) => x.projectId === p.id)])) as ProjectState;
   };
-  const saveProjectData = async (p: Project, data: { products: Product[]; surveyResponses: SurveyResponse[] }) => {
-    if (p.database && projectDatabases) return projectDatabases.write(p.database, data as unknown as Record<string, unknown>);
-    await store.commit(db => { db.products = db.products.filter(x => x.projectId !== p.id).concat(data.products); db.surveyResponses = db.surveyResponses.filter(x => x.projectId !== p.id).concat(data.surveyResponses); });
+  const saveProjectState = async (p: Project, state: ProjectState) => {
+    if (p.database && projectDatabases) {
+      const current = await projectDatabases.read(p.database);
+      await projectDatabases.write(p.database, { ...current, ...state });
+      return;
+    }
+    await store.commit(db => { for (const key of projectPrivateKeys) if (state[key]) (db as any)[key] = (db as any)[key].filter((x: any) => x.projectId !== p.id).concat(state[key]); });
   };
+  const projectData = async (p: Project) => { const state = await projectState(p); return { products: (state.products ?? []) as Product[], surveyResponses: (state.surveyResponses ?? []) as SurveyResponse[] }; };
+  const saveProjectData = async (p: Project, data: { products: Product[]; surveyResponses: SurveyResponse[] }) => { const state = await projectState(p); state.products = data.products; state.surveyResponses = data.surveyResponses; await saveProjectState(p, state); };
   const cookieSecure = process.env.SESSION_COOKIE_SECURE === 'true';
   const cookieMaxAge = Number(process.env.SESSION_COOKIE_MAX_AGE ?? 604800);
   const setSession = (reply: any, uid: string) => reply.setCookie(cookieName, token(uid, secret), { httpOnly: true, sameSite: 'lax', secure: cookieSecure, path: '/', maxAge: Number.isFinite(cookieMaxAge) && cookieMaxAge > 0 ? cookieMaxAge : 604800 });
 
 
-  app.get('/health', async () => ({ status: 'ok', service: 'appweave-backend', version: appVersion, time: now(), storage: process.env.DATABASE_URL ? 'postgresql' : 'file-backed-local', pool: store.poolStatus(), providers: [...new Map(store.data.providerConfigs.map(c => [c.provider, { provider: c.provider, baseUrl: c.baseUrl, model: c.model, configured: Boolean(c.keyConfigured && c.keyCiphertext) }])).values()] }));
+  app.get('/health', async () => { const configs = (await Promise.all(store.data.projects.map(projectState))).flatMap(state => state.providerConfigs ?? []); return { status: 'ok', service: 'appweave-backend', version: appVersion, time: now(), storage: process.env.DATABASE_URL ? 'postgresql' : 'file-backed-local', pool: store.poolStatus(), providers: [...new Map(configs.map((c: any) => [c.provider, { provider: c.provider, baseUrl: c.baseUrl, model: c.model, configured: Boolean(c.keyConfigured && c.keyCiphertext) }])).values()] }; });
   app.get('/api/v1/auth/me', async request => { const uid = auth(request); const u = store.data.users.find(x => x.id === uid); if (!u) throw bad('User not found', 404, 'NOT_FOUND'); return { user: { id: u.id, email: u.email } }; });
   app.post('/api/v1/auth/register', async (request, reply) => {
     const body = z.object({ email: z.string().email().transform(x => x.toLowerCase()), password: z.string().min(8).max(200) }).parse(request.body);
@@ -157,7 +168,7 @@ export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; wo
     return { preferences: updated };
   });
   app.get('/api/v1/projects', async request => { const uid = auth(request); return { projects: ownedProjects(store, uid).map(p => ({ ...p, previewUrl: previewUrl(p.id) })) }; });
-  app.get('/api/v1/overview', async request => { const uid = auth(request); const projects = ownedProjects(store, uid); const ids = new Set(projects.map(p => p.id)); return { activeProjects: projects.length, requests: store.data.audits.filter(a => a.userId === uid || (process.env.NODE_ENV === 'development' && process.env.APPWEAVE_MCP_LOCAL_TEST_MODE === 'true' && a.userId === 'local-mcp-test-user')).length, deployments: store.data.deployments.filter(d => ids.has(d.projectId)).length, members: 1, errors: 0, databaseRecords: store.data.products.filter(p => ids.has(p.projectId)).length }; });
+  app.get('/api/v1/overview', async request => { const uid = auth(request); const projects = ownedProjects(store, uid); const states = await Promise.all(projects.map(projectState)); return { activeProjects: projects.length, requests: store.data.audits.filter(a => a.userId === uid || (process.env.NODE_ENV === 'development' && process.env.APPWEAVE_MCP_LOCAL_TEST_MODE === 'true' && a.userId === 'local-mcp-test-user')).length, deployments: states.reduce((count, state) => count + (state.deployments?.length ?? 0), 0), members: 1, errors: 0, databaseRecords: states.reduce((count, state) => count + (state.products?.length ?? 0), 0) }; });
   app.post('/api/v1/projects', async (request, reply) => {
     const uid = auth(request); const body = z.object({ name: z.string().trim().min(1).max(200) }).parse(request.body); const date = now();
       const projectId = store.id(); const database = projectDatabases ? await projectDatabases.provision(projectId) : undefined; const p: Project = { id: projectId, ownerId: uid, name: body.name, environment: 'development', publicClientId: `aw_public_${projectId.replaceAll('-', '')}`, previewUrl: previewUrl(projectId), productionUrl: `${publicBaseUrl()}/app/${projectId}`, createdAt: date, updatedAt: date, ...(database ? { database } : {}) }; const settings: ProjectSettings = { projectId, name: p.name, allowedOrigins: [], usageLimit: 10000, lifecycleStatus: 'active', environment: p.environment, updatedAt: date }; await store.commit(db => { db.projects.push(p); db.projectSettings.push(settings); }); await audit('project.created', p.id, uid, request.id); return reply.code(201).send(p);
@@ -175,26 +186,26 @@ export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; wo
     await store.commit(db => { const index = db.projectSettings.findIndex(x => x.projectId === p.id); if (index < 0) db.projectSettings.push(updated); else db.projectSettings[index] = updated; });
     await audit('project.settings.updated', p.id, uid, request.id, { fields: Object.keys(changes) }); return updated;
   });
-  app.get('/api/v1/projects/:projectId/providers', async request => { const p = project(request); return { providers: (['gemini', 'openai', 'openrouter', 'groq', 'nvidia'] as AIProviderName[]).map(provider => { const found = store.data.providerConfigs.find(x => x.projectId === p.id && x.provider === provider); return found ? providerView(found) : { provider, ...providerDefaults[provider], configured: false, key: null }; }) }; });
+  app.get('/api/v1/projects/:projectId/providers', async request => { const p = project(request); const configs = await projectState(p); return { providers: (['gemini', 'openai', 'openrouter', 'groq', 'nvidia'] as AIProviderName[]).map(provider => { const found = (configs.providerConfigs ?? []).find((x: any) => x.provider === provider); return found ? providerView(found) : { provider, ...providerDefaults[provider], configured: false, key: null }; }) }; });
   app.patch('/api/v1/projects/:projectId/providers/:provider', async request => {
     const p = project(request); const uid = auth(request); const { provider } = providerParam.parse(request.params); const input = providerInput.parse(request.body); const updatedAt = now();
     const secretKey = input.key ?? input.apiKey!;
     const config: AIProviderConfig = { id: store.id(), projectId: p.id, provider, baseUrl: input.baseUrl, model: input.model, keyCiphertext: encryptProviderKey(secretKey, encryptionKey), keyDigest: createHash('sha256').update(secretKey).digest('hex'), keyLast4: secretKey.length >= 8 ? secretKey.slice(-4) : undefined, keyConfigured: true, updatedAt };
-    await store.commit(db => { const index = db.providerConfigs.findIndex(x => x.projectId === p.id && x.provider === provider); if (index < 0) db.providerConfigs.push(config); else db.providerConfigs[index] = { ...config, id: db.providerConfigs[index].id }; });
+    const state = await projectState(p); const configs = state.providerConfigs ?? (state.providerConfigs = []); const index = configs.findIndex((x: any) => x.provider === provider); if (index < 0) configs.push(config); else configs[index] = { ...config, id: configs[index]?.id }; await saveProjectState(p, state);
     await audit('project.provider.updated', p.id, uid, request.id, { provider, configured: true }); return providerView(config);
   });
   app.post('/api/v1/projects/:projectId/providers/:provider/test', async request => {
-    const p = project(request); const { provider } = providerParam.parse(request.params); const config = store.data.providerConfigs.find(x => x.projectId === p.id && x.provider === provider);
+    const p = project(request); const { provider } = providerParam.parse(request.params); const config = (await projectState(p)).providerConfigs?.find((x: any) => x.provider === provider);
     if (!config?.keyConfigured || !config.keyCiphertext) return { provider, configured: false, reachable: false, message: 'Provider is not configured.' };
     const result = await providerFor(config).test(); return { provider, configured: true, reachable: result.reachable, message: result.message };
   });
   app.get('/api/v1/projects/:projectId/providers/openrouter/models', async request => {
     const p = project(request);
-    const config = store.data.providerConfigs.find(x => x.projectId === p.id && x.provider === 'openrouter');
+    const config = (await projectState(p)).providerConfigs?.find((x: any) => x.provider === 'openrouter');
     if (!config?.keyConfigured || !config.keyCiphertext) throw bad('OpenRouter is not configured for this project', 422, 'PROVIDER_NOT_CONFIGURED');
     return { models: await providerFor(config).discoverOpenRouterModels() };
   });
-  app.delete('/api/v1/projects/:projectId/providers/:provider', async request => { const p = project(request); const uid = auth(request); const { provider } = providerParam.parse(request.params); const index = store.data.providerConfigs.findIndex(x => x.projectId === p.id && x.provider === provider); if (index >= 0) await store.commit(db => { db.providerConfigs.splice(index, 1); }); await audit('project.provider.removed', p.id, uid, request.id, { provider }); return { provider, configured: false }; });
+  app.delete('/api/v1/projects/:projectId/providers/:provider', async request => { const p = project(request); const uid = auth(request); const { provider } = providerParam.parse(request.params); const state = await projectState(p); const index = (state.providerConfigs ?? []).findIndex((x: any) => x.provider === provider); if (index >= 0) { state.providerConfigs!.splice(index, 1); await saveProjectState(p, state); } await audit('project.provider.removed', p.id, uid, request.id, { provider }); return { provider, configured: false }; });
   app.get('/api/v1/projects/:projectId/products', async request => { const p = project(request); return { products: (await projectData(p)).products }; });
   app.post('/api/v1/projects/:projectId/products', async (request, reply) => { const p = project(request); const uid = auth(request); const body = productInput.parse(request.body); const date = now(); const item: Product = { id: store.id(), projectId: p.id, ...body, createdAt: date, updatedAt: date }; const data = await projectData(p); data.products.push(item); await saveProjectData(p, data); await audit('product.created', p.id, uid, request.id); return reply.code(201).send(item); });
   app.post('/api/v1/projects/:projectId/survey-responses', async (request, reply) => {
@@ -224,46 +235,46 @@ export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; wo
    app.get('/api/v1/projects/:projectId/products/:productId', async request => { const p = project(request); const data = await projectData(p); const item = data.products.find(x => x.id === (request.params as any).productId); if (!item) throw bad('Product not found', 404, 'NOT_FOUND'); return item; });
    app.patch('/api/v1/projects/:projectId/products/:productId', async request => { const p = project(request); const uid = auth(request); const data = await projectData(p); const item = data.products.find(x => x.id === (request.params as any).productId); if (!item) throw bad('Product not found', 404, 'NOT_FOUND'); const body = productInput.partial().parse(request.body); Object.assign(item, body, { updatedAt: now() }); await saveProjectData(p, data); await audit('product.updated', p.id, uid, request.id); return item; });
    app.delete('/api/v1/projects/:projectId/products/:productId', async request => { const p = project(request); const uid = auth(request); const data = await projectData(p); const i = data.products.findIndex(x => x.id === (request.params as any).productId); if (i < 0) throw bad('Product not found', 404, 'NOT_FOUND'); const [deleted] = data.products.splice(i, 1); await saveProjectData(p, data); await audit('product.deleted', p.id, uid, request.id); return { deleted: deleted.id }; });
-  app.post('/api/v1/projects/:projectId/specifications/versions', async request => { const p = project(request); const uid = auth(request); const body = specInput.parse(request.body); const prior = store.data.specs.filter(x => x.projectId === p.id); const spec = { id: store.id(), projectId: p.id, version: prior.length + 1, schema: body.schema as any, createdAt: now(), createdBy: uid }; await store.commit(db => db.specs.push(spec)); return spec; });
-  app.get('/api/v1/projects/:projectId/specifications/versions', async request => { const p = project(request); return { versions: store.data.specs.filter(x => x.projectId === p.id) }; });
+  app.post('/api/v1/projects/:projectId/specifications/versions', async request => { const p = project(request); const uid = auth(request); const body = specInput.parse(request.body); const state = await projectState(p); const prior = state.specs ?? []; const spec = { id: store.id(), projectId: p.id, version: prior.length + 1, schema: body.schema as any, createdAt: now(), createdBy: uid }; prior.push(spec); state.specs = prior; await saveProjectState(p, state); return spec; });
+  app.get('/api/v1/projects/:projectId/specifications/versions', async request => { const p = project(request); return { versions: await projectState(p).then(state => state.specs ?? []) }; });
   const buildProject = async (p: Project, uid: string, environment: 'preview'|'production', version: number, requestId: string, returnDetails = false) => {
-    const spec = store.data.specs.find(x => x.projectId === p.id && x.version === version);
+    const state = await projectState(p); const spec = (state.specs ?? []).find((x: any) => x.version === version);
     if (!spec) throw bad('Specification version not found', 404, 'NOT_FOUND');
     const buildId = store.id(); const baseUrl = publicBaseUrl();
     const url = `${baseUrl}/${environment === 'preview' ? 'preview' : 'app'}/${p.id}`;
     const createdAt = now();
     const record: ProjectBuild = { id: buildId, projectId: p.id, environment, version, status: 'building', runtime: 'unavailable', logs: ['build queued'], artifacts: [], createdAt, updatedAt: createdAt, createdBy: uid };
-    await store.commit(db => db.builds.push(record));
+    (state.builds ??= []).push(record); await saveProjectState(p, state);
     const result = await buildProjectArtifacts(p, workspaceRoot, environment, version, buildId, spec.schema);
     Object.assign(record, { ...result, updatedAt: now() });
     if (result.status === 'failed') {
       const failedDeployment: Deployment = { id: store.id(), projectId: p.id, environment, version, status: 'failed', url, buildId, buildLog: result.logs, createdAt, createdBy: uid };
-      await store.commit(db => { db.builds[db.builds.findIndex(x => x.id === buildId)] = record; db.deployments.push(failedDeployment); });
+      (state.builds ??= [])[state.builds.findIndex((x: any) => x.id === buildId)] = record; (state.deployments ??= []).push(failedDeployment); await saveProjectState(p, state);
       if (returnDetails) return { deployment: failedDeployment, build: record };
       throw bad(`Build failed: ${result.error}`, 422, 'BUILD_FAILED');
     }
     const d: Deployment = { id: store.id(), projectId: p.id, environment, version, status: 'active', url, buildId, buildLog: result.logs, createdAt, createdBy: uid };
-     await store.commit(db => { db.builds[db.builds.findIndex(x => x.id === buildId)] = record; db.deployments.filter(x => x.projectId === p.id && x.environment === environment && x.status === 'active').forEach(x => x.status = 'rolled_back'); db.deployments.push(d); db.buildHistory.push({ id: store.id(), projectId: p.id, specVersion: version, stages: [{ name: 'validate_specification', status: 'completed' }, { name: 'artifact_build', status: 'completed', detail: result.runtime }], createdAt: now(), createdBy: uid }); });
+     (state.builds ??= [])[state.builds.findIndex((x: any) => x.id === buildId)] = record; (state.deployments ??= []).filter((x: any) => x.environment === environment && x.status === 'active').forEach((x: any) => x.status = 'rolled_back'); (state.deployments ??= []).push(d); (state.buildHistory ??= []).push({ id: store.id(), projectId: p.id, specVersion: version, stages: [{ name: 'validate_specification', status: 'completed' }, { name: 'artifact_build', status: 'completed', detail: result.runtime }], createdAt: now(), createdBy: uid }); await saveProjectState(p, state);
     await audit(`deployment.${environment}`, p.id, uid, requestId, { version, buildId }); return returnDetails ? { deployment: d, build: record } : d;
   };
   app.post('/api/v1/projects/:projectId/deployments', async request => { const p = project(request); const uid = auth(request); const b = z.object({ environment: z.enum(['preview','production']), version: z.number().int().positive() }).parse(request.body); return buildProject(p, uid, b.environment, b.version, request.id); });
   app.post('/api/v1/projects/:projectId/builds', async request => { const p = project(request); const uid = auth(request); const b = z.object({ environment: z.enum(['preview','production']).default('preview'), version: z.number().int().positive() }).parse(request.body ?? {}); return buildProject(p, uid, b.environment, b.version, request.id); });
   app.post('/api/v1/projects/:projectId/publish', async request => { const p = project(request); const uid = auth(request); const b = z.object({ version: z.number().int().positive() }).parse(request.body); return buildProject(p, uid, 'production', b.version, request.id); });
-  app.get('/api/v1/projects/:projectId/builds', async request => { const p = project(request); return { builds: store.data.builds.filter(b => b.projectId === p.id), deployments: store.data.deployments.filter(d => d.projectId === p.id) }; });
-  app.get('/api/v1/projects/:projectId/builds/:buildId', async request => { const p = project(request); const build = store.data.builds.find(item => item.projectId === p.id && item.id === (request.params as any).buildId); if (!build) throw bad('Build not found', 404, 'NOT_FOUND'); return { build, deployment: store.data.deployments.find(item => item.buildId === build.id) ?? null }; });
+  app.get('/api/v1/projects/:projectId/builds', async request => { const p = project(request); const state = await projectState(p); return { builds: state.builds ?? [], deployments: state.deployments ?? [] }; });
+  app.get('/api/v1/projects/:projectId/builds/:buildId', async request => { const p = project(request); const state = await projectState(p); const build = (state.builds ?? []).find((item: any) => item.id === (request.params as any).buildId); if (!build) throw bad('Build not found', 404, 'NOT_FOUND'); return { build, deployment: (state.deployments ?? []).find((item: any) => item.buildId === build.id) ?? null }; });
   app.get('/api/v1/projects/:projectId/runtime/status', async request => { project(request); return sandboxStatus(); });
-  const activeArtifact = (p: Project, environment: 'preview'|'production') => [...store.data.deployments].reverse().find(d => d.projectId === p.id && d.environment === environment && d.status === 'active');
-  const spaRouting = (p: Project, environment: 'preview'|'production') => {
-    const active = activeArtifact(p, environment);
-    const spec = active ? store.data.specs.find(item => item.projectId === p.id && item.version === active.version) : [...store.data.specs].reverse().find(item => item.projectId === p.id);
+  const activeArtifact = async (p: Project, environment: 'preview'|'production') => [...((await projectState(p)).deployments ?? [])].reverse().find((d: any) => d.environment === environment && d.status === 'active');
+  const spaRouting = async (p: Project, environment: 'preview'|'production') => {
+    const active = await activeArtifact(p, environment);
+    const specs = (await projectState(p)).specs ?? []; const spec = active ? specs.find((item: any) => item.version === active.version) : [...specs].reverse()[0];
     return spec?.schema?.frontend?.routing === 'spa';
   };
   const artifactResponse = async (p: Project, environment: 'preview'|'production', root: string, path: string) => {
-    try { return await readArtifactResponse(root, path, `/${environment === 'preview' ? 'preview' : 'app'}/${p.id}/`, spaRouting(p, environment)); }
+    try { return await readArtifactResponse(root, path, `/${environment === 'preview' ? 'preview' : 'app'}/${p.id}/`, await spaRouting(p, environment)); }
     catch { throw bad('Application artifact unavailable', 404, 'NOT_FOUND'); }
   };
   const previewRoot = async (p: Project): Promise<string | undefined> => {
-    const active = [...store.data.deployments].reverse().find(d => d.projectId === p.id && d.environment === 'preview' && d.status === 'active');
+    const active = [...(await projectState(p)).deployments ?? []].reverse().find((d: any) => d.environment === 'preview' && d.status === 'active');
     if (active) return join(workspaceRoot, p.id, 'preview', `version-${active.version}`, 'dist');
     const root = join(workspaceRoot, p.id);
     // Unbuilt package projects must never fall back to source HTML or stale root dist.
@@ -276,7 +287,7 @@ export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; wo
     const p = ownedProject(store, (request.params as any).projectId, auth(request));
     let root = await previewRoot(p);
     if (!root) {
-      const latest = [...store.data.specs].reverse().find(spec => spec.projectId === p.id);
+      const latest = [...(await projectState(p)).specs ?? []].reverse()[0];
       if (latest) { await buildProject(p, auth(request), 'preview', latest.version, request.id); root = await previewRoot(p); }
     }
     if (!root) {
@@ -297,34 +308,34 @@ export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; wo
   });
   app.get('/app/:projectId', async (request, reply) => {
     const p = ownedProject(store, (request.params as any).projectId, auth(request));
-    const build = activeArtifact(p, 'production');
+    const build = await activeArtifact(p, 'production');
     if (!build) throw bad('No active production build', 404, 'NOT_FOUND');
     const response = await artifactResponse(p, 'production', join(workspaceRoot, p.id, 'production', `version-${build.version}`, 'dist'), '');
     return reply.type(response.type).send(response.body);
   });
   app.get('/app/:projectId/*', async (request, reply) => {
     const p = ownedProject(store, (request.params as any).projectId, auth(request));
-    const build = activeArtifact(p, 'production');
+    const build = await activeArtifact(p, 'production');
     if (!build) throw bad('No active production build', 404, 'NOT_FOUND');
     const response = await artifactResponse(p, 'production', join(workspaceRoot, p.id, 'production', `version-${build.version}`, 'dist'), String((request.params as any)['*'] ?? ''));
     return reply.type(response.type).send(response.body);
   });
-  app.get('/api/v1/projects/:projectId/deployments', async request => { const p = project(request); return { deployments: store.data.deployments.filter(x => x.projectId === p.id) }; });
-  const createVersion = async (request: any, reason: string, restoredSpecs?: any[]) => { const p = project(request); const uid = auth(request); const prior = store.data.snapshots.filter(x => x.projectId === p.id); const state = { specs: (restoredSpecs ?? store.data.specs.filter(x => x.projectId === p.id)).map(x => ({ ...x })) }; const files = versionFiles(state.specs); const commitSha = await repoFor(p.id).commit(files, `version ${prior.length + 1}: ${reason}`); const snapshot: Snapshot = { id: store.id(), projectId: p.id, version: prior.length + 1, reason, state, files, commitSha, createdAt: now(), createdBy: uid }; await store.commit(db => db.snapshots.push(snapshot)); return snapshot; };
+  app.get('/api/v1/projects/:projectId/deployments', async request => { const p = project(request); return { deployments: (await projectState(p)).deployments ?? [] }; });
+  const createVersion = async (request: any, reason: string, restoredSpecs?: any[]) => { const p = project(request); const uid = auth(request); const projectStateData = await projectState(p); const prior = projectStateData.snapshots ?? []; const state = { specs: (restoredSpecs ?? projectStateData.specs ?? []).map((x: any) => ({ ...x })) }; const files = versionFiles(state.specs); const commitSha = await repoFor(p.id).commit(files, `version ${prior.length + 1}: ${reason}`); const snapshot: Snapshot = { id: store.id(), projectId: p.id, version: prior.length + 1, reason, state, files, commitSha, createdAt: now(), createdBy: uid }; prior.push(snapshot); projectStateData.snapshots = prior; await saveProjectState(p, projectStateData); return snapshot; };
   app.post('/api/v1/projects/:projectId/snapshots', async (request, reply) => { const b = z.object({ reason: z.string().min(1).max(200).default('manual') }).parse(request.body ?? {}); return reply.code(201).send(await createVersion(request, b.reason)); });
   app.post('/api/v1/projects/:projectId/versions', async (request, reply) => { const b = z.object({ reason: z.string().min(1).max(200).default('manual') }).parse(request.body ?? {}); return reply.code(201).send(await createVersion(request, b.reason)); });
-  app.get('/api/v1/projects/:projectId/snapshots', async request => { const p = project(request); return { snapshots: store.data.snapshots.filter(x => x.projectId === p.id).map(({ state, files, ...meta }) => meta) }; });
-  app.get('/api/v1/projects/:projectId/versions', async request => { const p = project(request); return { versions: store.data.snapshots.filter(x => x.projectId === p.id).map(({ state, files, ...meta }) => meta) }; });
-  const compare = async (request: any) => { project(request); const params = request.params as any; const all = store.data.snapshots.filter(x => x.projectId === params.projectId); const left = all.find(x => x.id === (params.snapshotId ?? params.version) || String(x.version) === String(params.version)); const right = all.find(x => x.id === (params.otherSnapshotId ?? params.otherVersion) || String(x.version) === String(params.otherVersion)); if (!left || !right) throw bad('Version not found', 404, 'NOT_FOUND'); return { from: left.version, to: right.version, changedFiles: await repoFor(params.projectId).changedFiles(left.files ?? versionFiles(left.state.specs), right.files ?? versionFiles(right.state.specs)) }; };
+  app.get('/api/v1/projects/:projectId/snapshots', async request => { const p = project(request); return { snapshots: (await projectState(p)).snapshots?.map(({ state, files, ...meta }: any) => meta) ?? [] }; });
+  app.get('/api/v1/projects/:projectId/versions', async request => { const p = project(request); return { versions: (await projectState(p)).snapshots?.map(({ state, files, ...meta }: any) => meta) ?? [] }; });
+  const compare = async (request: any) => { const p = project(request); const params = request.params as any; const all = (await projectState(p)).snapshots ?? []; const left = all.find(x => x.id === (params.snapshotId ?? params.version) || String(x.version) === String(params.version)); const right = all.find(x => x.id === (params.otherSnapshotId ?? params.otherVersion) || String(x.version) === String(params.otherVersion)); if (!left || !right) throw bad('Version not found', 404, 'NOT_FOUND'); return { from: left.version, to: right.version, changedFiles: await repoFor(params.projectId).changedFiles(left.files ?? versionFiles(left.state.specs), right.files ?? versionFiles(right.state.specs)) }; };
   app.get('/api/v1/projects/:projectId/snapshots/:snapshotId/compare/:otherSnapshotId', compare);
   app.get('/api/v1/projects/:projectId/versions/:version/compare/:otherVersion', compare);
-  const rollback = async (request: any, reply: any) => { const p = project(request); const uid = auth(request); const params = request.params as any; const target = store.data.snapshots.find(x => x.projectId === p.id && (x.id === (params.snapshotId ?? params.version) || String(x.version) === String(params.version))); if (!target) throw bad('Version not found', 404, 'NOT_FOUND'); const specs = target.state?.specs; if (!Array.isArray(specs)) throw bad('Snapshot validation failed', 422, 'VERSION_INVALID'); specs.forEach(x => z.unknown().parse(x.schema)); const created = await createVersion(request, `rollback to version ${target.version}`, specs); await store.commit(db => { db.specs = db.specs.filter(x => x.projectId !== p.id).concat(specs as any); const latest = db.snapshots.find(x => x.id === created.id); if (latest) latest.state = { specs: specs as any }; }); await audit('snapshot.rollback', p.id, uid, request.id, { snapshotId: target.id, newVersion: created.version }); return reply.send({ rolledBackTo: target.id, version: created.version, snapshot: { ...created, state: { specs } } }); };
+  const rollback = async (request: any, reply: any) => { const p = project(request); const uid = auth(request); const params = request.params as any; const projectStateData = await projectState(p); const target = (projectStateData.snapshots ?? []).find((x: any) => x.id === (params.snapshotId ?? params.version) || String(x.version) === String(params.version)); if (!target) throw bad('Version not found', 404, 'NOT_FOUND'); const specs = target.state?.specs; if (!Array.isArray(specs)) throw bad('Snapshot validation failed', 422, 'VERSION_INVALID'); specs.forEach(x => z.unknown().parse(x.schema)); const created = await createVersion(request, `rollback to version ${target.version}`, specs); projectStateData.specs = specs as any; const latest = (projectStateData.snapshots ?? []).find((x: any) => x.id === created.id); if (latest) latest.state = { specs: specs as any }; await saveProjectState(p, projectStateData); await audit('snapshot.rollback', p.id, uid, request.id, { snapshotId: target.id, newVersion: created.version }); return reply.send({ rolledBackTo: target.id, version: created.version, snapshot: { ...created, state: { specs } } }); };
   app.post('/api/v1/projects/:projectId/snapshots/:snapshotId/rollback', rollback);
   app.post('/api/v1/projects/:projectId/versions/:version/rollback', rollback);
   app.get('/api/v1/projects/:projectId/audit-logs', async request => { const p = project(request); return { logs: store.data.audits.filter(x => x.projectId === p.id) }; });
-  app.get('/api/v1/projects/:projectId/schema', async request => { const p = project(request); const versions = store.data.specs.filter(x => x.projectId === p.id); return { entities: [{ name: 'Product', fields: [{ name: 'name', type: 'string', required: true }, { name: 'sku', type: 'string', required: true }, { name: 'price', type: 'number', required: true }, { name: 'description', type: 'string', required: false }] }], version: versions.at(-1)?.version ?? 0, migrationStatus: 'ready' }; });
-  app.get('/api/v1/projects/:projectId/memory', async request => { const p = project(request); return { memory: store.data.projectMemory.filter(x => x.projectId === p.id), decisions: store.data.decisions.filter(x => x.projectId === p.id), builds: store.data.buildHistory.filter(x => x.projectId === p.id) }; });
-  app.get('/api/v1/projects/:projectId/graph', async request => { const p = project(request); return { nodes: store.data.graphNodes.filter(x => x.projectId === p.id), edges: store.data.graphEdges.filter(x => x.projectId === p.id) }; });
+  app.get('/api/v1/projects/:projectId/schema', async request => { const p = project(request); const versions = await projectState(p).then(state => state.specs ?? []); return { entities: [{ name: 'Product', fields: [{ name: 'name', type: 'string', required: true }, { name: 'sku', type: 'string', required: true }, { name: 'price', type: 'number', required: true }, { name: 'description', type: 'string', required: false }] }], version: versions.at(-1)?.version ?? 0, migrationStatus: 'ready' }; });
+  app.get('/api/v1/projects/:projectId/memory', async request => { const p = project(request); const state = await projectState(p); return { memory: state.projectMemory ?? [], decisions: state.decisions ?? [], builds: state.buildHistory ?? [] }; });
+  app.get('/api/v1/projects/:projectId/graph', async request => { const p = project(request); const state = await projectState(p); return { nodes: state.graphNodes ?? [], edges: state.graphEdges ?? [] }; });
   /* AI BUILDER DISABLED: preserve implementation for a future re-enable.
   app.post('/api/v1/projects/:projectId/ai/builds/drafts', async (request, reply) => {
     const p = project(request); const uid = auth(request); const input = draftInput.parse(request.body);
@@ -367,19 +378,19 @@ export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; wo
   const requestedMcpLocalTestMode = opts.mcpLocalTestMode ?? process.env.APPWEAVE_MCP_LOCAL_TEST_MODE === 'true';
   const mcpLocalTestMode = requestedMcpLocalTestMode && (process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'test');
   const verifyPreview = opts.previewVerifier ?? (async (projectId: string) => {
-    const active = [...store.data.deployments].reverse().find(item => item.projectId === projectId && item.environment === 'preview' && item.status === 'active');
+    const active = [...((await projectState(store.data.projects.find(item => item.id === projectId)!)).deployments ?? [])].reverse().find((item: any) => item.environment === 'preview' && item.status === 'active');
     if (!active) return false;
     try { await validateArtifact(join(workspaceRoot, projectId, 'preview', `version-${active.version}`, 'dist')); return true; } catch { return false; }
   });
   registerMcpRoutes({ app, store, workspaceRoot, secret, cookieName, repoFor, audit, mcpUserId: mcpUser, createSpecVersion: async (projectId, createdBy) => {
-    if (store.data.specs.some(item => item.projectId === projectId)) return;
+    const target = store.data.projects.find(item => item.id === projectId); if (!target) return; const targetState = await projectState(target); if ((targetState.specs ?? []).length) return;
     const schema = normalizeApplicationSpec({ schema: { entities: {}, relationships: [], roles: ['admin'], permissions: {}, api: {}, frontend: { source: 'project-files' }, pages: [], features: ['existing project files'] } }).schema;
     const spec = { id: store.id(), projectId, version: 1, schema, createdAt: now(), createdBy };
-    await store.commit(db => { if (!db.specs.some(item => item.projectId === projectId)) db.specs.push(spec); });
+    targetState.specs = [spec]; await saveProjectState(target, targetState);
     return spec;
   }, rebuildPreview: async projectId => {
     const p = store.data.projects.find(item => item.id === projectId);
-     const newest = [...store.data.specs].filter(item => item.projectId === projectId).sort((a, b) => b.version - a.version)[0];
+     const target = store.data.projects.find(item => item.id === projectId); const newest = target ? [...((await projectState(target)).specs ?? [])].sort((a: any, b: any) => b.version - a.version)[0] : undefined;
      if (p && newest) {
        try { await buildProject(p, newest.createdBy, 'preview', newest.version, `mcp-${store.id()}`); }
        catch { /* failed builds are recorded while the active artifact remains untouched */ }
