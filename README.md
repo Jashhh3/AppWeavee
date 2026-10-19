@@ -130,6 +130,8 @@ The API is at `http://localhost:3000`; the dashboard is at `http://localhost:808
 
 Docker Compose starts PostgreSQL 16 alongside the API. `DATABASE_URL` is supplied to the API and the migration in `backend/migrations/001_initial.sql` runs automatically. Core account, token, project, provider, survey, audit, build, deployment, and version records are mirrored into PostgreSQL; the JSON state document preserves compatibility with the existing store. The JSON store and generated secrets are mounted in `appweave-data`, while PostgreSQL uses `postgres-data`. Remove all local data with `docker compose down -v`.
 
+With `DATABASE_URL` enabled, newly created projects are provisioned with separate PostgreSQL databases and non-login project roles. The platform owner authorization remains central and server-side, while product and survey data for newly provisioned projects is stored through the project's isolated database binding. Existing projects retain their current database/state and are never replaced automatically. See `backend/README.md` for required PostgreSQL provisioning permissions and the explicit local file-store limitation.
+
 ## Deploy
 
 On a host with Docker Engine and Compose v2, copy the repository and `.env.example` to `.env`, set `JWT_SECRET`, then run:

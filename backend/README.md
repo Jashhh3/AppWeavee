@@ -118,6 +118,12 @@ Project versions are stored in server-owned repositories below `PROJECT_WORKSPAC
 
 The file-backed store is intentionally dependency-free and persists at `DATA_FILE`. It provides atomic-in-process writes and ownership checks on every project-scoped route. It is not intended as a horizontally concurrent production database.
 
+## Project database isolation
+
+When `DATABASE_URL` is configured, every project created through the dashboard API or MCP receives an idempotently provisioned PostgreSQL database and a dedicated `NOLOGIN` role. The platform connection performs provisioning; project code never receives the platform credential. The role is granted only `CONNECT`, `USAGE` on the private `app` schema, and CRUD access to that project's state table. Project product and survey-response operations use this isolated state for newly provisioned projects; older projects without a binding continue using their existing store until explicitly migrated.
+
+Provisioning requires the configured PostgreSQL platform user to be a superuser (or equivalent permissions for `CREATE DATABASE`, `CREATE ROLE`, database grants, and `SET ROLE`). If those capabilities are unavailable, project creation fails closed rather than silently sharing another project's database. Existing projects are not migrated or replaced automatically. The binding records only non-secret database and role identifiers; credentials are never returned to frontend code.
+
 ## AI providers
 
 Configure a provider for an owned project with `PATCH /api/v1/projects/:projectId/providers/:provider`, using `gemini`, `openai`, or `openrouter`, a provider base URL/model, and `key` (or `apiKey`). The key is encrypted server-side with `AI_ENCRYPTION_KEY`; provider listing responses expose only a redacted suffix. Generate with `POST /api/v1/ai/generate` and `{ "projectId": "...", "prompt": "..." }`. Responses are normalized and validated as application specifications. Provider calls use a bounded timeout and return actionable error codes. Configure the timeout with `AI_PROVIDER_TIMEOUT_MS` in milliseconds; invalid or non-positive values use the safe 120000 ms default.

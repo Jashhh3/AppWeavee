@@ -19,6 +19,7 @@ import { buildProjectArtifacts, validateArtifact } from './project-runtime.js';
 import { stat } from 'node:fs/promises';
 import { readArtifactResponse } from './artifact-serving.js';
 import { sandboxStatus } from './sandbox-worker.js';
+import { ProjectDatabaseManager } from './project-database.js';
 
 const productInput = z.object({ name: z.string().trim().min(1).max(200), sku: z.string().trim().min(1).max(80), price: z.number().finite().nonnegative(), description: z.string().max(2000).optional() });
 const specInput = z.object({ schema: z.object({ entities: z.record(z.object({ fields: z.record(z.string()), permissions: z.record(z.array(z.string())).optional() })).default({}), relationships: z.array(z.record(z.string())).default([]), roles: z.array(z.string()).default(['admin']), api: z.record(z.unknown()).default({}), frontend: z.record(z.unknown()).default({}) }) });
@@ -51,6 +52,7 @@ const aiFailure = (stage: string, requestId: string, cause: unknown, diagnostics
 export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; workspaceRoot?: string; encryptionKey?: string; fetch?: typeof fetch; aiTimeoutMs?: number; mcpLocalTestMode?: boolean; previewVerifier?: (projectId: string, previewUrl: string) => Promise<boolean> } = {}): Promise<FastifyInstance> {
   const secret = opts.jwtSecret ?? process.env.JWT_SECRET ?? 'development-only-change-me';
   const store = await new Store(opts.dataFile ?? process.env.DATA_FILE ?? './data/appweave.json', process.env.DATABASE_URL).load();
+  const projectDatabases = process.env.DATABASE_URL ? new ProjectDatabaseManager(process.env.DATABASE_URL) : undefined;
   const encryptionKey = opts.encryptionKey ?? process.env.AI_ENCRYPTION_KEY ?? (process.env.NODE_ENV === 'test' ? 'test-only-development-encryption-key' : undefined);
   if (!encryptionKey) throw new Error('AI_ENCRYPTION_KEY is required');
   const providerFor = (config: AIProviderConfig) => { if (!config.keyCiphertext) throw bad('Provider credentials are unavailable; reconfigure this provider', 422, 'PROVIDER_KEY_UNAVAILABLE'); return new HttpAIProvider(config.provider, config, decryptProviderKey(config.keyCiphertext, encryptionKey), opts.fetch, opts.aiTimeoutMs ?? resolveAIProviderTimeoutMs(process.env.AI_PROVIDER_TIMEOUT_MS, DEFAULT_AI_PROVIDER_TIMEOUT_MS)); };
@@ -80,13 +82,22 @@ export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; wo
     }
   });
   store.installLifecycleHandlers();
-  app.addHook('onClose', async () => { store.removeLifecycleHandlers(); await store.flush(); });
+  app.addHook('onClose', async () => { store.removeLifecycleHandlers(); await projectDatabases?.close(); await store.flush(); });
   app.addHook('onResponse', async (request) => { await store.commit(db => db.audits.push({ id: store.id(), userId: undefined, action: `${request.method} ${request.routeOptions.url}`, requestId: request.id, metadata: { status: request.routeOptions.url }, createdAt: now() })); });
   const cookieName = process.env.SESSION_COOKIE_NAME ?? 'appweave_session';
   const auth = (request: any) => userId(request, secret, cookieName, store);
   const mcpUser = (request: any) => auth(request);
   const project = (request: any) => ownedProject(store, request.params.projectId, auth(request));
   const audit = async (action: string, projectId: string | undefined, uid: string | undefined, requestId: string, metadata: unknown = {}) => store.commit(db => db.audits.push({ id: store.id(), action, projectId, userId: uid, requestId, metadata, createdAt: now() }));
+  const projectData = async (p: Project) => {
+    if (!p.database || !projectDatabases) return { products: store.data.products.filter(x => x.projectId === p.id), surveyResponses: store.data.surveyResponses.filter(x => x.projectId === p.id) };
+    const state = await projectDatabases.read(p.database);
+    return { products: Array.isArray(state.products) ? state.products as Product[] : [], surveyResponses: Array.isArray(state.surveyResponses) ? state.surveyResponses as SurveyResponse[] : [] };
+  };
+  const saveProjectData = async (p: Project, data: { products: Product[]; surveyResponses: SurveyResponse[] }) => {
+    if (p.database && projectDatabases) return projectDatabases.write(p.database, data as unknown as Record<string, unknown>);
+    await store.commit(db => { db.products = db.products.filter(x => x.projectId !== p.id).concat(data.products); db.surveyResponses = db.surveyResponses.filter(x => x.projectId !== p.id).concat(data.surveyResponses); });
+  };
   const cookieSecure = process.env.SESSION_COOKIE_SECURE === 'true';
   const cookieMaxAge = Number(process.env.SESSION_COOKIE_MAX_AGE ?? 604800);
   const setSession = (reply: any, uid: string) => reply.setCookie(cookieName, token(uid, secret), { httpOnly: true, sameSite: 'lax', secure: cookieSecure, path: '/', maxAge: Number.isFinite(cookieMaxAge) && cookieMaxAge > 0 ? cookieMaxAge : 604800 });
@@ -149,7 +160,7 @@ export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; wo
   app.get('/api/v1/overview', async request => { const uid = auth(request); const projects = ownedProjects(store, uid); const ids = new Set(projects.map(p => p.id)); return { activeProjects: projects.length, requests: store.data.audits.filter(a => a.userId === uid || (process.env.NODE_ENV === 'development' && process.env.APPWEAVE_MCP_LOCAL_TEST_MODE === 'true' && a.userId === 'local-mcp-test-user')).length, deployments: store.data.deployments.filter(d => ids.has(d.projectId)).length, members: 1, errors: 0, databaseRecords: store.data.products.filter(p => ids.has(p.projectId)).length }; });
   app.post('/api/v1/projects', async (request, reply) => {
     const uid = auth(request); const body = z.object({ name: z.string().trim().min(1).max(200) }).parse(request.body); const date = now();
-     const projectId = store.id(); const p: Project = { id: projectId, ownerId: uid, name: body.name, environment: 'development', publicClientId: `aw_public_${projectId.replaceAll('-', '')}`, previewUrl: previewUrl(projectId), productionUrl: `${publicBaseUrl()}/app/${projectId}`, createdAt: date, updatedAt: date }; const settings: ProjectSettings = { projectId, name: p.name, allowedOrigins: [], usageLimit: 10000, lifecycleStatus: 'active', environment: p.environment, updatedAt: date }; await store.commit(db => { db.projects.push(p); db.projectSettings.push(settings); }); await audit('project.created', p.id, uid, request.id); return reply.code(201).send(p);
+      const projectId = store.id(); const database = projectDatabases ? await projectDatabases.provision(projectId) : undefined; const p: Project = { id: projectId, ownerId: uid, name: body.name, environment: 'development', publicClientId: `aw_public_${projectId.replaceAll('-', '')}`, previewUrl: previewUrl(projectId), productionUrl: `${publicBaseUrl()}/app/${projectId}`, createdAt: date, updatedAt: date, ...(database ? { database } : {}) }; const settings: ProjectSettings = { projectId, name: p.name, allowedOrigins: [], usageLimit: 10000, lifecycleStatus: 'active', environment: p.environment, updatedAt: date }; await store.commit(db => { db.projects.push(p); db.projectSettings.push(settings); }); await audit('project.created', p.id, uid, request.id); return reply.code(201).send(p);
   });
   app.get('/api/v1/projects/:projectId', async request => { const p = project(request); return { ...p, previewUrl: previewUrl(p.id) }; });
   app.delete('/api/v1/projects/:projectId', async request => { const p = project(request); const uid = auth(request); await store.commit(db => { for (const value of Object.values(db) as unknown[]) if (Array.isArray(value)) { for (let i = value.length - 1; i >= 0; i--) if ((value[i] as any)?.projectId === p.id || (value[i] as any)?.id === p.id) value.splice(i, 1); } }); const { rm } = await import('node:fs/promises'); await rm(join(workspaceRoot, p.id), { recursive: true, force: true }); await audit('project.deleted', p.id, uid, request.id); return { deleted: p.id }; });
@@ -184,8 +195,8 @@ export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; wo
     return { models: await providerFor(config).discoverOpenRouterModels() };
   });
   app.delete('/api/v1/projects/:projectId/providers/:provider', async request => { const p = project(request); const uid = auth(request); const { provider } = providerParam.parse(request.params); const index = store.data.providerConfigs.findIndex(x => x.projectId === p.id && x.provider === provider); if (index >= 0) await store.commit(db => { db.providerConfigs.splice(index, 1); }); await audit('project.provider.removed', p.id, uid, request.id, { provider }); return { provider, configured: false }; });
-  app.get('/api/v1/projects/:projectId/products', async request => { const p = project(request); return { products: store.data.products.filter(x => x.projectId === p.id) }; });
-  app.post('/api/v1/projects/:projectId/products', async (request, reply) => { const p = project(request); const uid = auth(request); const body = productInput.parse(request.body); const date = now(); const item: Product = { id: store.id(), projectId: p.id, ...body, createdAt: date, updatedAt: date }; await store.commit(db => db.products.push(item)); await audit('product.created', p.id, uid, request.id); return reply.code(201).send(item); });
+  app.get('/api/v1/projects/:projectId/products', async request => { const p = project(request); return { products: (await projectData(p)).products }; });
+  app.post('/api/v1/projects/:projectId/products', async (request, reply) => { const p = project(request); const uid = auth(request); const body = productInput.parse(request.body); const date = now(); const item: Product = { id: store.id(), projectId: p.id, ...body, createdAt: date, updatedAt: date }; const data = await projectData(p); data.products.push(item); await saveProjectData(p, data); await audit('product.created', p.id, uid, request.id); return reply.code(201).send(item); });
   app.post('/api/v1/projects/:projectId/survey-responses', async (request, reply) => {
     const p = project(request); const uid = auth(request);
     let serialized: string;
@@ -193,7 +204,7 @@ export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; wo
     if (Buffer.byteLength(serialized, 'utf8') > surveyResponseMaxBytes) throw bad('Survey response payload is too large', 413, 'PAYLOAD_TOO_LARGE');
     const body = surveyResponseInput.parse(request.body);
     const response: SurveyResponse = { id: store.id(), projectId: p.id, submittedBy: uid, ...(body.surveyId ? { surveyId: body.surveyId } : {}), answers: body.answers, consent: true, createdAt: now() };
-    await store.commit(db => db.surveyResponses.push(response));
+     const data = await projectData(p); data.surveyResponses.push(response); await saveProjectData(p, data);
     await audit('survey.response.created', p.id, uid, request.id, { surveyId: response.surveyId, answerCount: Object.keys(response.answers).length, consent: true });
     return reply.code(201).send({ id: response.id, projectId: response.projectId, surveyId: response.surveyId ?? null, answers: response.answers, consent: response.consent, createdAt: response.createdAt });
   });
@@ -205,14 +216,14 @@ export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; wo
     const p = body.projectId ? store.data.projects.find(item => item.id === body.projectId) : store.data.projects.find(item => item.publicClientId === body.publicClientId);
     if (!p || (body.publicClientId && p.publicClientId !== body.publicClientId)) throw bad('Survey project is not available', 404, 'NOT_FOUND');
     const response: SurveyResponse = { id: store.id(), projectId: p.id, submittedBy: 'anonymous', ...(body.surveyId ? { surveyId: body.surveyId } : {}), answers: body.answers, consent: true, createdAt: now() };
-    await store.commit(db => db.surveyResponses.push(response));
+     const data = await projectData(p); data.surveyResponses.push(response); await saveProjectData(p, data);
     await audit('survey.response.created', p.id, undefined, request.id, { surveyId: response.surveyId, answerCount: Object.keys(response.answers).length, consent: true, public: true });
     return reply.code(201).send({ id: response.id, projectId: response.projectId, surveyId: response.surveyId ?? null, consent: response.consent, createdAt: response.createdAt });
   });
-  app.get('/api/v1/projects/:projectId/survey-responses', async request => { const p = project(request); return { responses: store.data.surveyResponses.filter(x => x.projectId === p.id).map(({ submittedBy: _submittedBy, ...response }) => response) }; });
-  app.get('/api/v1/projects/:projectId/products/:productId', async request => { const p = project(request); const item = store.data.products.find(x => x.projectId === p.id && x.id === (request.params as any).productId); if (!item) throw bad('Product not found', 404, 'NOT_FOUND'); return item; });
-  app.patch('/api/v1/projects/:projectId/products/:productId', async request => { const p = project(request); const uid = auth(request); const item = store.data.products.find(x => x.projectId === p.id && x.id === (request.params as any).productId); if (!item) throw bad('Product not found', 404, 'NOT_FOUND'); const body = productInput.partial().parse(request.body); Object.assign(item, body, { updatedAt: now() }); await store.commit(db => db); await audit('product.updated', p.id, uid, request.id); return item; });
-  app.delete('/api/v1/projects/:projectId/products/:productId', async request => { const p = project(request); const uid = auth(request); const i = store.data.products.findIndex(x => x.projectId === p.id && x.id === (request.params as any).productId); if (i < 0) throw bad('Product not found', 404, 'NOT_FOUND'); const [deleted] = store.data.products.splice(i, 1); await store.commit(db => db); await audit('product.deleted', p.id, uid, request.id); return { deleted: deleted.id }; });
+  app.get('/api/v1/projects/:projectId/survey-responses', async request => { const p = project(request); return { responses: (await projectData(p)).surveyResponses.map(({ submittedBy: _submittedBy, ...response }) => response) }; });
+   app.get('/api/v1/projects/:projectId/products/:productId', async request => { const p = project(request); const data = await projectData(p); const item = data.products.find(x => x.id === (request.params as any).productId); if (!item) throw bad('Product not found', 404, 'NOT_FOUND'); return item; });
+   app.patch('/api/v1/projects/:projectId/products/:productId', async request => { const p = project(request); const uid = auth(request); const data = await projectData(p); const item = data.products.find(x => x.id === (request.params as any).productId); if (!item) throw bad('Product not found', 404, 'NOT_FOUND'); const body = productInput.partial().parse(request.body); Object.assign(item, body, { updatedAt: now() }); await saveProjectData(p, data); await audit('product.updated', p.id, uid, request.id); return item; });
+   app.delete('/api/v1/projects/:projectId/products/:productId', async request => { const p = project(request); const uid = auth(request); const data = await projectData(p); const i = data.products.findIndex(x => x.id === (request.params as any).productId); if (i < 0) throw bad('Product not found', 404, 'NOT_FOUND'); const [deleted] = data.products.splice(i, 1); await saveProjectData(p, data); await audit('product.deleted', p.id, uid, request.id); return { deleted: deleted.id }; });
   app.post('/api/v1/projects/:projectId/specifications/versions', async request => { const p = project(request); const uid = auth(request); const body = specInput.parse(request.body); const prior = store.data.specs.filter(x => x.projectId === p.id); const spec = { id: store.id(), projectId: p.id, version: prior.length + 1, schema: body.schema as any, createdAt: now(), createdBy: uid }; await store.commit(db => db.specs.push(spec)); return spec; });
   app.get('/api/v1/projects/:projectId/specifications/versions', async request => { const p = project(request); return { versions: store.data.specs.filter(x => x.projectId === p.id) }; });
   const buildProject = async (p: Project, uid: string, environment: 'preview'|'production', version: number, requestId: string, returnDetails = false) => {
@@ -373,7 +384,7 @@ export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; wo
        try { await buildProject(p, newest.createdBy, 'preview', newest.version, `mcp-${store.id()}`); }
        catch { /* failed builds are recorded while the active artifact remains untouched */ }
      }
-  }, verifyPreview, allowUnauthenticated: mcpLocalTestMode });
+   }, verifyPreview, allowUnauthenticated: mcpLocalTestMode, projectDatabases });
   return app;
 }
 if (process.env.NODE_ENV !== 'test') buildApp().then(app => app.listen({ port: Number(process.env.PORT ?? 3000), host: '0.0.0.0' })).catch(err => { console.error(err); process.exit(1); });
