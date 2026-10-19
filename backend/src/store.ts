@@ -13,6 +13,7 @@ export class Store {
   private db: DB = empty();
   private writeQueue: Promise<void> = Promise.resolve();
   private pool?: PoolType;
+  private lifecycleHandlers?: Array<[NodeJS.Signals | 'uncaughtException' | 'unhandledRejection', (...args: any[]) => void]>;
   constructor(private readonly file: string, private readonly databaseUrl = process.env.DATABASE_URL) {}
   async load() {
     if (this.databaseUrl) {
@@ -32,6 +33,18 @@ export class Store {
       this.db = empty(); await this.save();
     }
     return this;
+  }
+  installLifecycleHandlers() {
+    if (this.lifecycleHandlers) return;
+    const shutdown = async () => { try { await this.flush(); } catch { /* best effort during process shutdown */ } };
+    const signal = (signalName: NodeJS.Signals) => { void shutdown().finally(() => process.exit(0)); };
+    const fatal = () => { void shutdown().finally(() => process.exit(1)); };
+    this.lifecycleHandlers = [['SIGTERM', signal], ['SIGINT', signal], ['uncaughtException', fatal], ['unhandledRejection', fatal]];
+    for (const [name, handler] of this.lifecycleHandlers) process.once(name as any, handler as any);
+  }
+  removeLifecycleHandlers() {
+    for (const [name, handler] of this.lifecycleHandlers ?? []) process.removeListener(name as any, handler as any);
+    this.lifecycleHandlers = undefined;
   }
   private async save() {
     if (this.pool) {
@@ -62,8 +75,22 @@ export class Store {
   get data() { return this.db; }
   async commit<T>(fn: (db: DB) => T): Promise<T> {
     let result!: T;
-    const operation = this.writeQueue.then(async () => { result = fn(this.db); await this.save(); });
-    this.writeQueue = operation.catch(() => undefined);
+    const operation = this.writeQueue.then(async () => {
+      result = fn(this.db);
+      const limit = Number(process.env.AUDIT_RETENTION_PER_PROJECT ?? 1000);
+      if (Number.isFinite(limit) && limit >= 0) {
+        const ids = new Set(this.db.audits.map(a => a.projectId).filter((id): id is string => Boolean(id)));
+        for (const projectId of ids) {
+          const projectAudits = this.db.audits.filter(a => a.projectId === projectId).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+          if (projectAudits.length > limit) {
+            const remove = new Set(projectAudits.slice(0, projectAudits.length - limit).map(a => a.id));
+            this.db.audits = this.db.audits.filter(a => !remove.has(a.id));
+          }
+        }
+      }
+      await this.save();
+    });
+    this.writeQueue = operation;
     await operation;
     return result;
   }

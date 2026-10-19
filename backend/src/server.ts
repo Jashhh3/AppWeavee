@@ -79,7 +79,8 @@ export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; wo
       if (!sameOrigin && !allowedOrigins.includes(origin)) throw bad('Origin is not allowed', 403, 'FORBIDDEN');
     }
   });
-  app.addHook('onClose', async () => { await store.flush(); });
+  store.installLifecycleHandlers();
+  app.addHook('onClose', async () => { store.removeLifecycleHandlers(); await store.flush(); });
   app.addHook('onResponse', async (request) => { await store.commit(db => db.audits.push({ id: store.id(), userId: undefined, action: `${request.method} ${request.routeOptions.url}`, requestId: request.id, metadata: { status: request.routeOptions.url }, createdAt: now() })); });
   const cookieName = process.env.SESSION_COOKIE_NAME ?? 'appweave_session';
   const auth = (request: any) => userId(request, secret, cookieName, store);
@@ -313,13 +314,16 @@ export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; wo
   app.get('/api/v1/projects/:projectId/schema', async request => { const p = project(request); const versions = store.data.specs.filter(x => x.projectId === p.id); return { entities: [{ name: 'Product', fields: [{ name: 'name', type: 'string', required: true }, { name: 'sku', type: 'string', required: true }, { name: 'price', type: 'number', required: true }, { name: 'description', type: 'string', required: false }] }], version: versions.at(-1)?.version ?? 0, migrationStatus: 'ready' }; });
   app.get('/api/v1/projects/:projectId/memory', async request => { const p = project(request); return { memory: store.data.projectMemory.filter(x => x.projectId === p.id), decisions: store.data.decisions.filter(x => x.projectId === p.id), builds: store.data.buildHistory.filter(x => x.projectId === p.id) }; });
   app.get('/api/v1/projects/:projectId/graph', async request => { const p = project(request); return { nodes: store.data.graphNodes.filter(x => x.projectId === p.id), edges: store.data.graphEdges.filter(x => x.projectId === p.id) }; });
+  /* AI BUILDER DISABLED: preserve implementation for a future re-enable.
   app.post('/api/v1/projects/:projectId/ai/builds/drafts', async (request, reply) => {
     const p = project(request); const uid = auth(request); const input = draftInput.parse(request.body);
     const configured = store.data.providerConfigs.find(x => x.projectId === p.id && x.provider === input.provider);
     const draft: AIBuildDraft = { id: store.id(), projectId: p.id, createdBy: uid, prompt: { request: safePrompt(input.prompt), fields: sanitizeFields(input.fields) }, provider: input.provider, model: input.model ?? configured?.model ?? providerDefaults[input.provider].model, stage: 'draft', status: 'draft', requestId: request.id, diagnostics: [], attempts: 0, context: { memory: store.data.projectMemory.filter(x => x.projectId === p.id).slice(-10).map(x => safePrompt(x.content)), graph: store.data.graphNodes.filter(x => x.projectId === p.id).slice(-20).map(x => safePrompt(`${x.type}:${x.label}`)) }, createdAt: now(), updatedAt: now() };
     await store.commit(db => db.aiBuildDrafts.push(draft)); return reply.code(201).send(draft);
-  });
-  app.get('/api/v1/projects/:projectId/ai/builds/latest', async request => { const p = project(request); const drafts = store.data.aiBuildDrafts.filter(x => x.projectId === p.id); return { build: drafts.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0] ?? null }; });
+   });
+   */
+   /* AI BUILDER ROUTES DISABLED: preserved for a future re-enable.
+   app.get('/api/v1/projects/:projectId/ai/builds/latest', async request => { const p = project(request); const drafts = store.data.aiBuildDrafts.filter(x => x.projectId === p.id); return { build: drafts.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))[0] ?? null }; });
   app.post('/api/v1/projects/:projectId/ai/builds/:buildId/cancel', async request => { const p = project(request); const uid = auth(request); const draft = store.data.aiBuildDrafts.find(x => x.projectId === p.id && x.id === (request.params as any).buildId); if (!draft) throw bad('AI build not found', 404, 'NOT_FOUND'); draft.status = 'cancelled'; draft.stage = 'cancelled'; draft.updatedAt = now(); await store.commit(db => db.aiBuildDrafts); await audit('ai.build.cancelled', p.id, uid, request.id, { buildId: draft.id }); return draft; });
   app.post('/api/v1/projects/:projectId/ai/builds/:buildId/resume', async (request, reply) => {
     const p = project(request); const uid = auth(request); const draft = store.data.aiBuildDrafts.find(x => x.projectId === p.id && x.id === (request.params as any).buildId); if (!draft) throw bad('AI build not found', 404, 'NOT_FOUND');
@@ -346,13 +350,18 @@ export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; wo
      } catch (error) { stages.push({ name: 'persist_context', status: 'failed', detail: 'Generated result could not be saved or built' }); draft.status = 'failed'; draft.stage = 'persist_context'; draft.attempts = attempts; draft.diagnostics = [{ code: 'persistence_failed', message: 'The generated specification could not be saved.' }]; draft.updatedAt = now(); await store.commit(db => db.aiBuildDrafts); throw aiFailure('persist_context', request.id, error); }
      return { provider: config.provider, configured: true, output: redact(output, [decryptProviderKey(config.keyCiphertext!, encryptionKey)]), applicationSpec: { schema: parsed.schema }, diagnostics: [], attempts, stages, specVersion: spec.version, build: preview.build, previewUrl: preview.deployment.url, previewStatus: preview.build.status, previewError: preview.build.error };
   });
-  registerOAuthRoutes(app, store, secret, cookieName);
+   });
+   */
+   registerOAuthRoutes(app, store, secret, cookieName);
   const requestedMcpLocalTestMode = opts.mcpLocalTestMode ?? process.env.APPWEAVE_MCP_LOCAL_TEST_MODE === 'true';
   const mcpLocalTestMode = requestedMcpLocalTestMode && (process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'test');
   registerMcpRoutes({ app, store, workspaceRoot, secret, cookieName, repoFor, audit, mcpUserId: mcpUser, rebuildPreview: async projectId => {
     const p = store.data.projects.find(item => item.id === projectId);
-    const active = [...store.data.deployments].reverse().find(item => item.projectId === projectId && item.environment === 'preview' && item.status === 'active');
-    if (p && active) await buildProject(p, active.createdBy, 'preview', active.version, `mcp-${store.id()}`);
+     const newest = [...store.data.specs].filter(item => item.projectId === projectId).sort((a, b) => b.version - a.version)[0];
+     if (p && newest) {
+       try { await buildProject(p, newest.createdBy, 'preview', newest.version, `mcp-${store.id()}`); }
+       catch { /* failed builds are recorded while the active artifact remains untouched */ }
+     }
   }, allowUnauthenticated: mcpLocalTestMode });
   return app;
 }
