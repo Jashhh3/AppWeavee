@@ -5,21 +5,25 @@ import { artifactFile } from './project-runtime.js';
 /** Validate data/source only. Never imports or executes generated project code. */
 export async function validateGeneratedReactSource(root: string): Promise<void> {
   const manifest = JSON.parse(await readFile(await artifactFile(root, 'package.json'), 'utf8'));
-  // Stored schemas can be normalized without migrating existing project sources.
-  if (manifest.appweave?.framework !== 'react-vite') return;
   const dependencies = { ...manifest.dependencies, ...manifest.devDependencies };
-  for (const dependency of ['react', 'react-dom', 'vite', '@vitejs/plugin-react']) {
+  const isReactVite = manifest.appweave?.framework === 'react-vite' || Boolean(dependencies.react && dependencies['react-dom'] && dependencies.vite);
+  // Legacy non-React package projects retain their existing artifact contract.
+  if (!isReactVite) return;
+  for (const dependency of ['react', 'react-dom', 'vite']) {
     if (typeof dependencies[dependency] !== 'string' || !dependencies[dependency]) throw new Error(`Generated React project requires dependency: ${dependency}`);
   }
+  const hasPlugin = typeof dependencies['@vitejs/plugin-react'] === 'string' && Boolean(dependencies['@vitejs/plugin-react']);
   if (!/\bvite\s+build\b/.test(manifest.scripts?.build ?? '')) throw new Error('Generated React project requires a Vite build script');
   const config = await readFile(await artifactFile(root, 'vite.config.js'), 'utf8');
-  if (!config.includes('@vitejs/plugin-react') || !/plugins\s*:\s*\[\s*react\(/.test(config)) throw new Error('Generated React project requires the React Vite plugin');
+  if (hasPlugin && (!config.includes('@vitejs/plugin-react') || !/plugins\s*:\s*\[\s*react\(/.test(config))) throw new Error('Generated React project requires the React Vite plugin');
+   if (!/esbuild\s*:\s*\{[\s\S]*jsx\s*:\s*['"]automatic['"]/.test(config)) throw new Error('Generated React project requires automatic JSX configuration');
   const html = await readFile(await artifactFile(root, 'index.html'), 'utf8');
   if (!/\bid\s*=\s*["']root["']/.test(html)) throw new Error('Generated React project requires a root mount');
   const script = [...html.matchAll(/<script\b[^>]*>/gi)].find(tag => /\btype\s*=\s*["']module["']/.test(tag[0]));
   const entry = script?.[0].match(/\bsrc\s*=\s*["']\/?(src\/main\.(jsx|tsx))["']/);
   if (!entry) throw new Error('Generated React project requires its local React module entrypoint');
-  const main = await readFile(await artifactFile(root, entry[1]), 'utf8');
+   const main = await readFile(await artifactFile(root, entry[1]), 'utf8');
+   if (!/import\s+(?:React\s*,\s*)?\{[^}]*\b(?:StrictMode|useState)\b[^}]*\}\s+from\s+['"]react['"]|import\s+React\s+from\s+['"]react['"]/.test(main)) throw new Error('Generated React entrypoint must import React explicitly');
   if (!/\bcreateRoot\s*\(/.test(main) || !/\.render\s*\(/.test(main) || !/getElementById\s*\(\s*["']root["']\s*\)/.test(main) || !main.includes('react-dom/client')) throw new Error('Generated React entrypoint must mount React into root');
   if (entry[2] === 'tsx') {
     for (const dependency of ['typescript', '@types/react', '@types/react-dom']) if (!dependencies[dependency]) throw new Error(`Generated TypeScript project requires dependency: ${dependency}`);

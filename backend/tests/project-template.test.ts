@@ -19,6 +19,8 @@ describe('generated React/Vite project template', () => {
       expect(manifest.devDependencies).toMatchObject({ vite: '5.4.8', '@vitejs/plugin-react': '4.3.1' });
       expect(await readFile(join(root, 'index.html'), 'utf8')).toContain(`src="/src/main.${extension}"`);
        expect(await readFile(join(root, `src/main.${extension}`), 'utf8')).toContain("import './style.css'");
+       expect(await readFile(join(root, `src/App.${extension}`), 'utf8')).toContain("import React from 'react';");
+       expect(await readFile(join(root, 'vite.config.js'), 'utf8')).toContain("jsx: 'automatic'");
       if (extension === 'tsx') {
         expect(files).toContain('tsconfig.json');
         expect(manifest.devDependencies).toMatchObject({ typescript: '5.5.4', '@types/react': '18.3.12', '@types/react-dom': '18.3.1' });

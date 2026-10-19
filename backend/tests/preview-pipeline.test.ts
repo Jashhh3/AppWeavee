@@ -66,6 +66,21 @@ describe('shared preview artifact pipeline', () => {
     expect((await get('/assets/%2e%2e/%2e%2e/index.html')).statusCode).toBe(404);
   });
 
+  it('serves a locked pre-built artifact without invoking the Docker compiler', async () => {
+    await writeFile(join(root, 'package-lock.json'), '{}');
+    await mkdir(join(root, 'dist/assets'), { recursive: true });
+    await writeFile(join(root, 'dist/index.html'), '<!doctype html><html><body><main><h1>Pre-built app</h1><script type="module" src="./assets/app.js"></script></main></body></html>');
+    await writeFile(join(root, 'dist/assets/app.js'), 'document.body.dataset.ready = "true";');
+    worker.mockRejectedValue(new Error('Docker compiler must not run for a pre-built project'));
+    const response = await build();
+    expect(response.statusCode).toBe(200);
+    const records = (await app.inject({ method: 'GET', url: `/api/v1/projects/${id}/builds`, headers })).json();
+    expect(records.builds[0].runtime).toBe('artifact_only');
+    expect(await readFile(join(root, 'preview/version-1/dist/index.html'), 'utf8')).toContain('Pre-built app');
+    expect((await get('/assets/app.js')).statusCode).toBe(200);
+    expect(worker).not.toHaveBeenCalled();
+  });
+
   it.each(['failed', 'unavailable'] as const)('records %s worker accurately without static React fallback', async status => {
     worker.mockResolvedValue({ status, runtime: status === 'failed' ? 'docker_worker' : 'unavailable', logs: ['build unavailable'], error: 'BUILD_REJECTED' });
     await mkdir(join(root, 'dist'), { recursive: true });

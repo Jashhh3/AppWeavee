@@ -134,6 +134,10 @@ With `DATABASE_URL` enabled, newly created projects are provisioned with separat
 
 Compose keeps the API and Docker worker on the same `/data/projects` container path and named volume. `COMPOSE_PROJECT_WORKSPACE_ROOT` may override that container path for a deliberate custom deployment; `PROJECT_WORKSPACE_ROOT` is reserved for host-run API processes. Leave `APPWEAVE_DOCKER_WORKER_VOLUME` unset in Compose so it derives the existing `${COMPOSE_PROJECT_NAME:-appweave}_appweave-projects` volume; set it explicitly to an empty value only when the API itself runs on the host and the worker must use a bind mount.
 
+## Universal project build contract
+
+Projects are previewed from validated browser-ready artifacts. A locked project that already contains a valid `dist/index.html` and local assets is promoted directly to the versioned preview without invoking the Docker compiler; this avoids `SANDBOX_SUBPATH_UNSUPPORTED` for pre-built React/Vite projects. Source-only package projects still require their configured compiler and fail explicitly if it is unavailable. Successful builds also refresh the root `dist/` artifact and record an internal artifact marker so generated output is not mistaken for source on the next build. Generated React projects explicitly import React and configure automatic JSX in `vite.config.js`. Database-test clients must send the current project UUID plus `fullName`, `email`, `phone`, `city`, and `testMessage`, and only treat `response.ok && (data.record || data.saved || data.success)` as a confirmed write.
+
 ## Deploy
 
 On a host with Docker Engine and Compose v2, copy the repository and `.env.example` to `.env`, set `JWT_SECRET`, then run:

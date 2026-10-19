@@ -1,4 +1,4 @@
-import { cp, mkdir, readFile, readdir, realpath, rename, rm, stat } from 'node:fs/promises';
+import { cp, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { isAbsolute, join, relative, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { Project, ApplicationSchema } from './types.js';
@@ -62,7 +62,14 @@ export async function buildProjectArtifacts(project: Project, workspaceRoot: str
   try {
     const source = await files(root);
     // Existing dist-only static projects are not empty generated projects.
-    const existingDist = await stat(join(root, 'dist', 'index.html')).then(() => true, () => false);
+    const generatedMarker = join(root, '.appweave-artifact.json');
+    const hasGeneratedRoot = await stat(generatedMarker).then(() => true, () => false);
+    const existingDist = !hasGeneratedRoot && await stat(join(root, 'dist', 'index.html')).then(() => true, () => false);
+    const hasLockfile = await stat(join(root, 'package-lock.json')).then(() => true, () => false);
+    // A locked project with a complete dist is already browser-ready. Prefer it
+    // over the optional Docker compiler; source-only projects still fail clearly
+    // if their configured compiler is unavailable.
+    const prebuiltDist = existingDist && hasLockfile ? await validateArtifact(join(root, 'dist')).then(() => true, () => false) : false;
     if (!source.length && !existingDist && schema) source.push(...await generateReactViteTemplate(root, project, schema));
     let bytes = 0;
     for (const path of source) bytes += (await stat(join(root, path))).size;
@@ -72,7 +79,11 @@ export async function buildProjectArtifacts(project: Project, workspaceRoot: str
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
       throw error;
     });
-    if (hasPackage) {
+    if (prebuiltDist) {
+      runtime = 'artifact_only';
+      await cp(join(root, 'dist'), staging, { recursive: true });
+      logs.push('using pre-built browser artifact; Docker sandbox not required');
+    } else if (hasPackage) {
       const manifest = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
       if (!manifest?.scripts || typeof manifest.scripts.build !== 'string') throw new Error('package.json requires a build script');
       await validateGeneratedReactSource(root);
@@ -100,6 +111,15 @@ export async function buildProjectArtifacts(project: Project, workspaceRoot: str
     try { await rename(staging, out); }
     catch (error) { if (hadOutput) await rename(backup, out); throw error; }
     await rm(backup, { recursive: true, force: true });
+    const rootDist = join(root, 'dist');
+    const rootBackup = join(root, `.previous-dist-${randomUUID()}`);
+    const hadRootDist = await stat(rootDist).then(() => true, () => false);
+    if (hadRootDist) await rename(rootDist, rootBackup);
+    try { await cp(out, rootDist, { recursive: true }); }
+    catch (error) { if (hadRootDist) await rename(rootBackup, rootDist); throw error; }
+    await rm(rootBackup, { recursive: true, force: true });
+    await writeFile(generatedMarker, JSON.stringify({ environment, version, generatedAt: new Date().toISOString() }) + '\n', 'utf8');
+    await validateArtifact(rootDist);
     logs.push('validated dist/index.html and local asset references', 'artifact written: dist/index.html');
     return { status: 'ready', runtime, logs, artifacts: ['dist/index.html'] };
   } catch (error) {
