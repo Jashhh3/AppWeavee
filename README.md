@@ -132,6 +132,8 @@ Docker Compose starts PostgreSQL 16 alongside the API. `DATABASE_URL` is supplie
 
 With `DATABASE_URL` enabled, newly created projects are provisioned with separate PostgreSQL databases and non-login project roles. The platform owner authorization remains central and server-side, while product and survey data for newly provisioned projects is stored through the project's isolated database binding. Existing projects retain their current database/state and are never replaced automatically. See `backend/README.md` for required PostgreSQL provisioning permissions and the explicit local file-store limitation.
 
+Compose keeps the API and Docker worker on the same `/data/projects` container path and named volume. `COMPOSE_PROJECT_WORKSPACE_ROOT` may override that container path for a deliberate custom deployment; `PROJECT_WORKSPACE_ROOT` is reserved for host-run API processes. Leave `APPWEAVE_DOCKER_WORKER_VOLUME` unset in Compose so it derives the existing `${COMPOSE_PROJECT_NAME:-appweave}_appweave-projects` volume; set it explicitly to an empty value only when the API itself runs on the host and the worker must use a bind mount.
+
 ## Deploy
 
 On a host with Docker Engine and Compose v2, copy the repository and `.env.example` to `.env`, set `JWT_SECRET`, then run:

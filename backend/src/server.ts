@@ -20,7 +20,7 @@ import { stat } from 'node:fs/promises';
 import { readArtifactResponse } from './artifact-serving.js';
 import { sandboxStatus } from './sandbox-worker.js';
 import { ProjectDatabaseManager } from './project-database.js';
-import { ensureProjectStorage, projectRoot, requireProjectStorage } from './project-storage.js';
+import { ensureProjectStorage, projectRoot, requireProjectStorage, workspaceRootPath } from './project-storage.js';
 
 const productInput = z.object({ name: z.string().trim().min(1).max(200), sku: z.string().trim().min(1).max(80), price: z.number().finite().nonnegative(), description: z.string().max(2000).optional() });
 const specInput = z.object({ schema: z.object({ entities: z.record(z.object({ fields: z.record(z.string()), permissions: z.record(z.array(z.string())).optional() })).default({}), relationships: z.array(z.record(z.string())).default([]), roles: z.array(z.string()).default(['admin']), api: z.record(z.unknown()).default({}), frontend: z.record(z.unknown()).default({}) }) });
@@ -58,7 +58,7 @@ export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; wo
   const encryptionKey = opts.encryptionKey ?? process.env.AI_ENCRYPTION_KEY ?? (process.env.NODE_ENV === 'test' ? 'test-only-development-encryption-key' : undefined);
   if (!encryptionKey) throw new Error('AI_ENCRYPTION_KEY is required');
   const providerFor = (config: AIProviderConfig) => { if (!config.keyCiphertext) throw bad('Provider credentials are unavailable; reconfigure this provider', 422, 'PROVIDER_KEY_UNAVAILABLE'); return new HttpAIProvider(config.provider, config, decryptProviderKey(config.keyCiphertext, encryptionKey), opts.fetch, opts.aiTimeoutMs ?? resolveAIProviderTimeoutMs(process.env.AI_PROVIDER_TIMEOUT_MS, DEFAULT_AI_PROVIDER_TIMEOUT_MS)); };
-  const workspaceRoot = opts.workspaceRoot ?? process.env.PROJECT_WORKSPACE_ROOT ?? './data/projects';
+  const workspaceRoot = workspaceRootPath(opts.workspaceRoot ?? process.env.PROJECT_WORKSPACE_ROOT ?? './data/projects');
   const repos = new Map<string, ProjectVersionRepo>();
   const repoFor = (id: string) => { let repo = repos.get(id); if (!repo) { repo = new ProjectVersionRepo(workspaceRoot, id); repos.set(id, repo); } return repo; };
   const versionFiles = (specs: unknown[]): VersionFiles => ({ 'appweave/specification.json': JSON.stringify({ specs }, null, 2) });

@@ -2,7 +2,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { ensureProjectStorage, projectRoot, requireProjectStorage } from '../src/project-storage.js';
+import { ensureProjectStorage, projectRoot, requireProjectStorage, workspaceRootPath } from '../src/project-storage.js';
 
 describe('authoritative project storage', () => {
   const id = '638857dd-a1c7-49f3-99d8-b52f021497a0';
@@ -10,6 +10,10 @@ describe('authoritative project storage', () => {
     const root = await mkdtemp(join(tmpdir(), 'appweave-storage-'));
     try { await expect(ensureProjectStorage(root, id)).resolves.toBe(projectRoot(root, id)); await writeFile(join(root, id, 'index.html'), 'ok'); await expect(requireProjectStorage(root, id)).resolves.toBe(projectRoot(root, id)); }
     finally { await rm(root, { recursive: true, force: true }); }
+  });
+  it('normalizes workspace roots to absolute paths and rejects empty roots', () => {
+    expect(workspaceRootPath('./relative-projects')).toBe(join(process.cwd(), 'relative-projects'));
+    expect(() => workspaceRootPath('')).toThrow('required');
   });
   it('rejects missing directories and traversal-shaped IDs', async () => {
     const root = await mkdtemp(join(tmpdir(), 'appweave-storage-'));

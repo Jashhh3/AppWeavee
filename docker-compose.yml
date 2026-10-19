@@ -21,14 +21,15 @@ services:
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:8080,http://127.0.0.1:8080}
       DATA_FILE: /data/appweave.json
       DATABASE_URL: ${DATABASE_URL:-postgresql://appweave:appweave-local-only@postgres:5432/appweave}
-      PROJECT_WORKSPACE_ROOT: ${PROJECT_WORKSPACE_ROOT:-/data/projects}
+      # Compose always uses the mounted container path. Host-run development may use PROJECT_WORKSPACE_ROOT separately.
+      PROJECT_WORKSPACE_ROOT: ${COMPOSE_PROJECT_WORKSPACE_ROOT:-/data/projects}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:3000}
       AI_PROVIDER_TIMEOUT_MS: ${AI_PROVIDER_TIMEOUT_MS:-180000}
       # Keep false in production; local test startup sets NODE_ENV=development and enables this explicitly.
       APPWEAVE_MCP_LOCAL_TEST_MODE: ${APPWEAVE_MCP_LOCAL_TEST_MODE:-false}
       APPWEAVE_DOCKER_WORKER: ${APPWEAVE_DOCKER_WORKER:-false}
-      # Match Compose's existing project-prefixed volume; do not rename the volume below.
-      APPWEAVE_DOCKER_WORKER_VOLUME: ${APPWEAVE_DOCKER_WORKER_VOLUME:-${COMPOSE_PROJECT_NAME:-appweave}_appweave-projects}
+       # Unset uses Compose's project-prefixed named volume; explicitly empty selects bind-mount mode for host-run API processes.
+       APPWEAVE_DOCKER_WORKER_VOLUME: ${APPWEAVE_DOCKER_WORKER_VOLUME-${COMPOSE_PROJECT_NAME:-appweave}_appweave-projects}
       APPWEAVE_DOCKER_WORKER_IMAGE: ${APPWEAVE_DOCKER_WORKER_IMAGE:-node:20.15.1-bookworm-slim}
     volumes:
       - appweave-data:/data

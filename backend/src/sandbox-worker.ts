@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process';
-import { dirname, isAbsolute, relative, resolve } from 'node:path';
+import { isAbsolute, relative, resolve } from 'node:path';
+import { readdir, stat } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 
 export type SandboxLimits = { timeoutMs: number; memoryMb: number; maxOutputBytes: number };
@@ -26,15 +27,21 @@ export async function runSandboxedViteBuild(root: string, out: string, limits = 
   const limitsLog = `worker limits: timeout=${limits.timeoutMs}ms memory=${limits.memoryMb}MiB output=${limits.maxOutputBytes} bytes`;
   if (!status.available) return { status: 'unavailable', runtime: 'unavailable', logs: ['vite worker unavailable; Docker worker is not enabled', limitsLog] };
 
-  const workspace = resolve(process.env.PROJECT_WORKSPACE_ROOT ?? dirname(resolve(root)));
   const projectPath = resolve(root);
+  const workspace = resolve(process.env.PROJECT_WORKSPACE_ROOT ?? resolve(projectPath, '..'));
   const projectRelative = relative(workspace, projectPath).replaceAll('\\', '/');
   const outputRelative = relative(projectPath, resolve(out)).replaceAll('\\', '/');
   if (!projectRelative || isAbsolute(projectRelative) || projectRelative.startsWith('../') || projectRelative === '..' || /[\0,\r\n"\\]/.test(projectRelative)) {
     return { status: 'failed', runtime: 'docker_worker', logs: ['worker refused an unsafe project path'], error: 'UNSAFE_PROJECT_PATH' };
   }
-  const volume = process.env.APPWEAVE_DOCKER_WORKER_VOLUME;
+  const volume = process.env.APPWEAVE_DOCKER_WORKER_VOLUME?.trim() || undefined;
   const image = process.env.APPWEAVE_DOCKER_WORKER_IMAGE ?? 'node:20.15.1-bookworm-slim';
+  // Never let Docker create a missing project mount or build from an empty one.
+  // The API owns project provisioning; the worker may only consume existing data.
+  const projectStorage = await stat(projectPath).catch(() => undefined);
+  if (!projectStorage?.isDirectory()) return { status: 'failed', runtime: 'docker_worker', logs: ['project storage directory is missing; refusing to start Docker worker', limitsLog], error: 'PROJECT_STORAGE_UNAVAILABLE' };
+  const entries = await readdir(projectPath).catch(() => [] as string[]);
+  if (entries.length === 0) return { status: 'failed', runtime: 'docker_worker', logs: ['project storage directory is empty; refusing to start Docker worker', limitsLog], error: 'PROJECT_STORAGE_UNAVAILABLE' };
   if ((volume && !/^[a-zA-Z0-9][a-zA-Z0-9_.-]*$/.test(volume)) || /[,\r\n"\0]/.test(projectPath)) {
     return { status: 'failed', runtime: 'docker_worker', logs: ['worker refused an unsafe mount'], error: 'UNSAFE_PROJECT_MOUNT' };
   }

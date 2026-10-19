@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { spawn } from 'node:child_process';
+import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { EventEmitter } from 'node:events';
 import { DEFAULT_SANDBOX_LIMITS, runSandboxedViteBuild, sandboxStatus } from '../src/sandbox-worker.js';
 
@@ -29,10 +30,27 @@ describe('sandbox worker', () => {
     expect(DEFAULT_SANDBOX_LIMITS).toEqual({ timeoutMs: 30_000, memoryMb: 512, maxOutputBytes: 2 * 1024 * 1024 });
   });
 
+  it.each([
+    ['missing', '/tmp/appweave-worker-missing'],
+    ['empty', '/tmp/appweave-worker-empty'],
+  ])('fails before Docker when project storage is %s', async (_label, projectPath) => {
+    vi.stubEnv('APPWEAVE_DOCKER_WORKER', 'true');
+    vi.stubEnv('PROJECT_WORKSPACE_ROOT', '/tmp');
+    vi.stubEnv('APPWEAVE_DOCKER_WORKER_VOLUME', '');
+    if (_label === 'empty') await mkdir(projectPath, { recursive: true });
+    await expect(runSandboxedViteBuild(projectPath, `${projectPath}/preview/staged`)).resolves.toMatchObject({
+      status: 'failed', runtime: 'docker_worker', error: 'PROJECT_STORAGE_UNAVAILABLE',
+    });
+    expect(spawn).not.toHaveBeenCalled();
+    if (_label === 'empty') await rm(projectPath, { recursive: true, force: true });
+  });
+
   it('propagates a nonzero isolated build exit and builds a clean scratch copy before exporting dist', async () => {
     vi.stubEnv('APPWEAVE_DOCKER_WORKER', 'true');
     vi.stubEnv('PROJECT_WORKSPACE_ROOT', '/tmp/projects');
     vi.stubEnv('APPWEAVE_DOCKER_WORKER_VOLUME', '');
+    await mkdir('/tmp/projects/example', { recursive: true });
+    await writeFile('/tmp/projects/example/package.json', '{}');
     const child = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter(), kill: vi.fn() });
     vi.mocked(spawn).mockImplementation(() => {
       queueMicrotask(() => { child.stderr.emit('data', Buffer.from('vite compilation failed')); child.emit('close', 1); });
@@ -58,6 +76,8 @@ describe('sandbox worker', () => {
     vi.stubEnv('APPWEAVE_DOCKER_WORKER', 'true');
     vi.stubEnv('PROJECT_WORKSPACE_ROOT', '/tmp/projects');
     vi.stubEnv('APPWEAVE_DOCKER_WORKER_VOLUME', 'existing_appweave-projects');
+    await mkdir('/tmp/projects/project', { recursive: true });
+    await writeFile('/tmp/projects/project/source.txt', 'project');
     const child = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter(), kill: vi.fn() });
     vi.mocked(spawn).mockImplementation((_command, args) => {
       queueMicrotask(() => {
@@ -89,6 +109,10 @@ describe('sandbox worker', () => {
 
   it('inspects the existing named volume and exposes only the selected project subpath', async () => {
     mockNamedVolume();
+    await mkdir('/data/projects/first-project', { recursive: true });
+    await writeFile('/data/projects/first-project/source.txt', 'first');
+    await mkdir('/data/projects/second-project', { recursive: true });
+    await writeFile('/data/projects/second-project/source.txt', 'second');
     for (const project of ['first-project', 'second-project']) {
       await expect(runSandboxedViteBuild(`/data/projects/${project}`, `/data/projects/${project}/preview/staged`)).resolves.toMatchObject({ status: 'ready' });
     }
@@ -107,6 +131,8 @@ describe('sandbox worker', () => {
 
   it('fails closed when the configured named volume does not exist without creating it or launching a worker', async () => {
     mockNamedVolume(1);
+    await mkdir('/data/projects/first', { recursive: true });
+    await writeFile('/data/projects/first/source.txt', 'first');
     await expect(runSandboxedViteBuild('/data/projects/first', '/data/projects/first/preview/staged')).resolves.toMatchObject({ status: 'failed', error: 'SANDBOX_VOLUME_UNAVAILABLE' });
     expect(spawn).toHaveBeenCalledTimes(2);
     expect(vi.mocked(spawn).mock.calls[1][1]).toEqual(['volume', 'inspect', 'existing_appweave-projects']);
@@ -114,6 +140,8 @@ describe('sandbox worker', () => {
 
   it('fails closed on unsupported volume-subpath with no retry using the whole volume', async () => {
     mockNamedVolume(0, 125);
+    await mkdir('/data/projects/first', { recursive: true });
+    await writeFile('/data/projects/first/source.txt', 'first');
     await expect(runSandboxedViteBuild('/data/projects/first', '/data/projects/first/preview/staged')).resolves.toMatchObject({ status: 'failed', error: 'SANDBOX_EXIT_125' });
     expect(spawn).toHaveBeenCalledTimes(3);
     expect((vi.mocked(spawn).mock.calls[2][1] as string[]).join(' ')).toContain('volume-subpath=first');
@@ -121,12 +149,16 @@ describe('sandbox worker', () => {
 
   it.each(['1.44 1.45', '1.45 1.44', '', 'unknown'])('refuses unsupported or unverified Docker API versions (%s) before mounting anything', async versions => {
     mockNamedVolume(0, 0, versions);
+    await mkdir('/data/projects/first', { recursive: true });
+    await writeFile('/data/projects/first/source.txt', 'first');
     await expect(runSandboxedViteBuild('/data/projects/first', '/data/projects/first/preview/staged')).resolves.toMatchObject({ status: 'failed', error: 'SANDBOX_SUBPATH_UNSUPPORTED' });
     expect(spawn).toHaveBeenCalledTimes(1);
   });
 
   it('refuses a forced legacy API even when the Docker daemon supports subpaths', async () => {
     mockNamedVolume();
+    await mkdir('/data/projects/first', { recursive: true });
+    await writeFile('/data/projects/first/source.txt', 'first');
     vi.stubEnv('DOCKER_API_VERSION', '1.44');
     await expect(runSandboxedViteBuild('/data/projects/first', '/data/projects/first/preview/staged')).resolves.toMatchObject({ status: 'failed', error: 'SANDBOX_SUBPATH_UNSUPPORTED' });
     expect(spawn).toHaveBeenCalledTimes(1);
