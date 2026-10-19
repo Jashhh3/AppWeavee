@@ -27,7 +27,8 @@ services:
       # Keep false in production; local test startup sets NODE_ENV=development and enables this explicitly.
       APPWEAVE_MCP_LOCAL_TEST_MODE: ${APPWEAVE_MCP_LOCAL_TEST_MODE:-false}
       APPWEAVE_DOCKER_WORKER: ${APPWEAVE_DOCKER_WORKER:-false}
-      APPWEAVE_DOCKER_WORKER_VOLUME: ${APPWEAVE_DOCKER_WORKER_VOLUME:-appweave-projects}
+      # Match Compose's existing project-prefixed volume; do not rename the volume below.
+      APPWEAVE_DOCKER_WORKER_VOLUME: ${APPWEAVE_DOCKER_WORKER_VOLUME:-${COMPOSE_PROJECT_NAME:-appweave}_appweave-projects}
       APPWEAVE_DOCKER_WORKER_IMAGE: ${APPWEAVE_DOCKER_WORKER_IMAGE:-node:20.15.1-bookworm-slim}
     volumes:
       - appweave-data:/data

@@ -1,98 +1,111 @@
-import { cp, mkdir, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
-import { join, relative } from 'node:path';
-import type { Project } from './types.js';
-import type { ApplicationSchema } from './types.js';
+import { cp, mkdir, readFile, readdir, realpath, rename, rm, stat } from 'node:fs/promises';
+import { isAbsolute, join, relative, resolve } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import type { Project, ApplicationSchema } from './types.js';
 import { generateReactViteTemplate } from './project-template.js';
 import { runSandboxedViteBuild } from './sandbox-worker.js';
+import { validateGeneratedReactSource } from './project-source.js';
 
 export type ArtifactBuild = { status: 'ready'|'failed'; runtime: 'artifact_only'|'docker_worker'|'unavailable'; logs: string[]; artifacts: string[]; error?: string };
-const MAX_FILES = 500;
-const MAX_BYTES = 5 * 1024 * 1024;
-const ignored = new Set(['.git', 'node_modules', 'dist', 'build']);
+const ignored = new Set(['.git', 'node_modules', 'dist', 'build', 'preview', 'production']);
 
-/** Synchronize an already-built preview entrypoint with its source workspace. */
-export async function syncPreviewEntryPoint(root: string, changedPath: string): Promise<void> {
-  const normalized = changedPath.replaceAll('\\', '/');
-  if (normalized !== 'index.html' && normalized !== 'public/index.html') return;
-  const sourceHtml = await readFile(join(root, normalized), 'utf8');
-  async function visit(directory: string): Promise<void> {
-    const entries = await readdir(directory, { withFileTypes: true });
-    for (const entry of entries) {
-      if (entry.isSymbolicLink() || entry.name === 'node_modules' || entry.name === '.git') continue;
-      const absolute = join(directory, entry.name);
-      if (!entry.isDirectory()) continue;
-      if (entry.name === 'dist') {
-        const artifact = join(absolute, 'index.html');
-        try { await stat(artifact); await writeFile(artifact, sourceHtml, 'utf8'); }
-        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
-      } else await visit(absolute);
-    }
-  }
-  await visit(root);
-}
+// Source edits must never overwrite a compiled entrypoint (or the last good build).
+export async function syncPreviewEntryPoint(_root: string, _changedPath: string): Promise<void> {}
 
 async function files(root: string, current = root): Promise<string[]> {
-  const entries = await readdir(current, { withFileTypes: true });
   const result: string[] = [];
-  for (const entry of entries) {
+  for (const entry of await readdir(current, { withFileTypes: true })) {
     if (ignored.has(entry.name) || entry.name.startsWith('.')) continue;
     const absolute = join(current, entry.name);
     if (entry.isDirectory()) result.push(...await files(root, absolute));
     else if (entry.isFile()) result.push(relative(root, absolute).replaceAll('\\', '/'));
-    if (result.length > MAX_FILES) throw new Error(`source exceeds ${MAX_FILES} files`);
+    if (result.length > 500) throw new Error('source exceeds 500 files');
   }
   return result;
 }
 
-export async function buildProjectArtifacts(project: Project, workspaceRoot: string, environment: 'preview'|'production', version: number, buildId: string, schema?: ApplicationSchema): Promise<ArtifactBuild> {
+/** Resolve real paths, including symlinks, within exactly one artifact root. */
+export async function artifactFile(root: string, path: string): Promise<string> {
+  if (!path || path.includes('\\') || path.includes('\0') || isAbsolute(path) || path.split('/').some(part => part === '..' || part.startsWith('.'))) throw new Error('Invalid artifact path');
+  const base = await realpath(root);
+  const target = await realpath(resolve(base, path));
+  const local = relative(base, target);
+  if (local.startsWith('..') || isAbsolute(local) || !(await stat(target)).isFile()) throw new Error('Invalid artifact path');
+  return target;
+}
+
+/** Require real HTML and every local script/style/image reference to exist. */
+export async function validateArtifact(root: string): Promise<string> {
+  const html = await readFile(await artifactFile(root, 'index.html'), 'utf8');
+  if (!/<(?:html|!doctype|head|body|main|h1|div|script)\b/i.test(html) || html.includes('*** Begin Patch')) throw new Error('Invalid dist/index.html');
+  for (const tag of html.matchAll(/<(?:script|link|img|source)\b[^>]*>/gi)) {
+    for (const attribute of tag[0].matchAll(/\b(?:src|href)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/gi)) {
+      const reference = attribute[1] ?? attribute[2] ?? attribute[3];
+      if (!reference || /^(?:[a-z][a-z\d+.-]*:|\/\/|#)/i.test(reference)) continue;
+      const path = decodeURIComponent(reference.split(/[?#]/)[0]).replace(/^\//, '').replace(/^\.\//, '');
+      if (!path) continue;
+      try { await artifactFile(root, path); }
+      catch { throw new Error(`Missing or unsafe artifact reference: ${reference}`); }
+    }
+  }
+  return html;
+}
+
+export async function buildProjectArtifacts(project: Project, workspaceRoot: string, environment: 'preview'|'production', version: number, _buildId: string, schema?: ApplicationSchema): Promise<ArtifactBuild> {
   const root = join(workspaceRoot, project.id);
-  const out = join(root, environment, `version-${version}`, 'dist');
-  const logs = ['runtime: artifact_only (no project code is executed)', 'source validation started'];
+  const parent = join(root, environment, `version-${version}`);
+  const out = join(parent, 'dist');
+  const staging = join(parent, `.staging-${randomUUID()}`);
+  const logs = ['source validation started'];
+  let runtime: ArtifactBuild['runtime'] = 'unavailable';
   try {
     await mkdir(root, { recursive: true });
-    const source = await files(root).catch(error => { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []; throw error; });
-    const sourceFiles = source.filter(path => !path.startsWith(`${environment}/version-`));
-    if (!sourceFiles.length && schema) { const generated = await generateReactViteTemplate(root, project, schema); sourceFiles.push(...generated); logs.push(`generated React/Vite source template (${generated.length} files)`); }
-    let total = 0;
-    for (const path of sourceFiles) total += (await stat(join(root, path))).size;
-    if (total > MAX_BYTES) throw new Error(`source exceeds ${MAX_BYTES} bytes`);
-    const packageFile = sourceFiles.find(path => path === 'package.json');
-    if (packageFile) {
-      const manifest = JSON.parse(await readFile(join(root, packageFile), 'utf8')) as { scripts?: unknown; dependencies?: unknown };
-      if (manifest.scripts && typeof manifest.scripts !== 'object') throw new Error('package.json scripts must be an object');
-      logs.push('package manifest validated; dependency scripts are not executed');
-    }
-    await rm(out, { recursive: true, force: true });
-    await mkdir(out, { recursive: true });
-    const worker = packageFile ? await runSandboxedViteBuild(root, out) : { status: 'unavailable' as const, runtime: 'unavailable' as const, logs: ['static project; Docker worker is not required'] };
-    logs.push(...worker.logs);
-    if (worker.status === 'failed') return { status: 'failed', runtime: 'docker_worker', logs: [...logs, 'isolated Vite build failed'], artifacts: [], error: worker.error };
-    const isolatedBuild = worker.status === 'ready';
-    if (!isolatedBuild) {
-      if (sourceFiles.some(path => path.startsWith('public/'))) await cp(join(root, 'public'), out, { recursive: true });
-      for (const asset of sourceFiles.filter(path => path.startsWith('src/') && /\.(css|svg|png|jpe?g|gif|webp|woff2?)$/i.test(path))) {
-        const target = join(out, asset.slice('src/'.length));
-        await mkdir(join(target, '..'), { recursive: true });
-        await cp(join(root, asset), target);
-      }
-      // Preserve non-code source assets when the optional Vite worker is unavailable.
-      for (const path of sourceFiles.filter(path => path.startsWith('src/') && !path.endsWith('.jsx') && !path.endsWith('.tsx'))) {
-        const parent = path.slice(0, path.lastIndexOf('/'));
-        await mkdir(join(out, parent), { recursive: true });
-        await cp(join(root, path), join(out, path));
-      }
-      const html = sourceFiles.find(path => path === 'index.html' || path === 'public/index.html');
-      if (html) await cp(join(root, html), join(out, 'index.html'));
+    const source = await files(root);
+    // Existing dist-only static projects are not empty generated projects.
+    const existingDist = await stat(join(root, 'dist', 'index.html')).then(() => true, () => false);
+    if (!source.length && !existingDist && schema) source.push(...await generateReactViteTemplate(root, project, schema));
+    let bytes = 0;
+    for (const path of source) bytes += (await stat(join(root, path))).size;
+    if (bytes > 5 * 1024 * 1024) throw new Error('source exceeds 5242880 bytes');
+    await mkdir(staging, { recursive: true });
+    const hasPackage = await stat(join(root, 'package.json')).then(() => true, error => {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
+      throw error;
+    });
+    if (hasPackage) {
+      const manifest = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
+      if (!manifest?.scripts || typeof manifest.scripts.build !== 'string') throw new Error('package.json requires a build script');
+      await validateGeneratedReactSource(root);
+      const worker = await runSandboxedViteBuild(root, staging);
+      runtime = worker.runtime;
+      logs.push(...worker.logs);
+      if (worker.status !== 'ready') throw new Error(worker.error ?? 'SANDBOX_WORKER_UNAVAILABLE');
+    } else {
+      runtime = 'artifact_only';
+      if (existingDist) await cp(join(root, 'dist'), staging, { recursive: true });
       else {
-        const sourceLabel = sourceFiles.length ? `Source files: ${sourceFiles.slice(0, 12).join(', ')}` : 'No source was present; generated minimal React-compatible shell.';
-        await writeFile(join(out, 'index.html'), `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${project.name} · AppWeave</title></head><body><div id="root"><h1>${project.name}</h1><p>${sourceLabel}</p><p>Build ${buildId.slice(0, 8)} · artifact-only preview</p></div></body></html>`, 'utf8');
-        logs.push(sourceFiles.length ? 'no static entrypoint found; generated bounded preview shell' : 'generated minimal preview shell');
+        if (source.some(path => path.startsWith('public/'))) await cp(join(root, 'public'), staging, { recursive: true });
+        for (const path of source.filter(path => !path.startsWith('public/'))) {
+          await mkdir(join(staging, path, '..'), { recursive: true });
+          await cp(join(root, path), join(staging, path));
+        }
       }
+      logs.push('static artifact project; no package.json or generated shell');
     }
-    logs.push(`validated ${sourceFiles.length} source file(s)`, 'artifact written: dist/index.html');
-    return { status: 'ready', runtime: isolatedBuild ? 'docker_worker' : 'artifact_only', logs, artifacts: ['dist/index.html'] };
+    await validateArtifact(staging);
+    // Validate before promotion so a failed rebuild of the same version is harmless.
+    const backup = join(parent, `.previous-${randomUUID()}`);
+    const hadOutput = await stat(out).then(() => true, () => false);
+    if (hadOutput) await rename(out, backup);
+    try { await rename(staging, out); }
+    catch (error) { if (hadOutput) await rename(backup, out); throw error; }
+    await rm(backup, { recursive: true, force: true });
+    logs.push('validated dist/index.html and local asset references', 'artifact written: dist/index.html');
+    return { status: 'ready', runtime, logs, artifacts: ['dist/index.html'] };
   } catch (error) {
     const message = error instanceof SyntaxError ? 'package.json is invalid JSON' : error instanceof Error ? error.message : 'build failed';
-    return { status: 'failed', runtime: 'unavailable', logs: [...logs, `build failed: ${message}`], artifacts: [], error: message };
+    return { status: 'failed', runtime, logs: [...logs, `build failed: ${message}`], artifacts: [], error: message };
+  } finally {
+    await rm(staging, { recursive: true, force: true });
   }
 }

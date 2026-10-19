@@ -8,7 +8,14 @@ export const applicationSchema = z.object({ entities: z.record(entity).default({
 export const applicationSpecEnvelope = z.object({ schema: applicationSchema }).strict();
 export type ValidationDiagnostic = { path: string; message: string; code: string };
 export type NormalizedSpec = { schema: ApplicationSchema; diagnostics: ValidationDiagnostic[] };
-export function normalizeApplicationSpec(input: unknown): NormalizedSpec { const parsed = applicationSpecEnvelope.safeParse(input); if (parsed.success) return { schema: parsed.data.schema as ApplicationSchema, diagnostics: [] }; return { schema: {} as ApplicationSchema, diagnostics: parsed.error.issues.map(issue => ({ path: issue.path.join('.') || '$', message: issue.message, code: issue.code })) }; }
+function enforceFrontendContract(schema: ApplicationSchema): ApplicationSchema {
+  const frontend = schema.frontend && typeof schema.frontend === 'object' ? schema.frontend : {};
+  const requestedLanguage = frontend.language;
+  const language = requestedLanguage === 'typescript' || requestedLanguage === 'tsx' ? requestedLanguage : 'jsx';
+  return { ...schema, frontend: { ...frontend, framework: 'react-vite', language } };
+}
+
+export function normalizeApplicationSpec(input: unknown): NormalizedSpec { const parsed = applicationSpecEnvelope.safeParse(input); if (parsed.success) return { schema: enforceFrontendContract(parsed.data.schema as ApplicationSchema), diagnostics: [] }; return { schema: {} as ApplicationSchema, diagnostics: parsed.error.issues.map(issue => ({ path: issue.path.join('.') || '$', message: issue.message, code: issue.code })) }; }
 function normalizeCommonShape(value: any): any {
   if (!value || typeof value !== 'object') return value;
   const candidate = value.schema && typeof value.schema === 'object' ? value : { schema: value };

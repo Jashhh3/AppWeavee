@@ -1,10 +1,14 @@
+FROM docker:26.1.4-cli AS docker-cli
 FROM node:20.15.1-bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends docker.io && rm -rf /var/lib/apt/lists/*
+# Debian bookworm's docker.io CLI predates --mount volume-subpath.
+COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 WORKDIR /app
 COPY backend/package.json backend/package-lock.json ./
 RUN npm ci
 COPY backend/tsconfig.json ./
 COPY backend/src ./src
+COPY backend/templates ./templates
+COPY backend/scripts/copy-templates.mjs ./scripts/copy-templates.mjs
 COPY backend/migrations ./migrations
 COPY backend/docker-entrypoint.sh ./docker-entrypoint.sh
 RUN npm run build && chmod +x ./docker-entrypoint.sh

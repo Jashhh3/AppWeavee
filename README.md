@@ -43,13 +43,17 @@ docker compose down
 
 ### Optional isolated React/Vite worker
 
-By default builds use the bounded artifact-only fallback and never execute project code in Fastify. To run generated React/Vite builds in short-lived, isolated containers locally, build the API image (it includes the Docker CLI) and opt in with the worker Compose overlay:
+The worker is disabled by default. Package-based projects require a successful isolated build; only existing static projects can use artifact-only previews. To run generated React/Vite builds in short-lived, isolated containers locally, build the API image (it includes the Docker CLI) and opt in with the worker Compose overlay:
 
 ```sh
 APPWEAVE_DOCKER_WORKER=true docker compose -f docker-compose.yml -f docker-compose.worker.yml up --build
 ```
 
-The overlay grants the API access to the local Docker socket so it can launch a worker with only the `appweave-projects` volume mounted. The worker runs `npm install --ignore-scripts` and `npm run build` with a 30-second timeout, 512 MiB memory limit, bounded logs, dropped capabilities, `no-new-privileges`, read-only container filesystem, and a temporary filesystem. Static projects and unavailable workers continue through artifact-only fallback; a failed isolated build is reported as failed with its worker logs. Do not enable this overlay on a shared host unless Docker socket access is part of the host's trust boundary.
+Named-volume workers require **Docker Engine 26.0+ (API 1.45+)** and a Docker CLI supporting `--mount volume-subpath` (the API image bundles CLI 26.1.4). The overlay grants the API access to the local Docker socket. Each worker mounts only the selected project's subdirectory via `volume-subpath`, never the whole projects volume. Unsupported engines fail the build; there is no broader-mount fallback. In local host mode (no `APPWEAVE_DOCKER_WORKER_VOLUME`), only the selected project directory is bind-mounted.
+
+Compose keeps its existing managed volume declaration and data. The worker volume defaults to `${COMPOSE_PROJECT_NAME:-appweave}_appweave-projects`, matching Compose's project-prefixed name (including `docker compose -p NAME`). Leave `APPWEAVE_DOCKER_WORKER_VOLUME` empty in `.env` to use that default. For an existing/custom installation, inspect the API container's mounts with `docker inspect "$(docker compose ps -q api)" --format '{{json .Mounts}}'` and set `APPWEAVE_DOCKER_WORKER_VOLUME` to the **existing volume's Name** mounted at `/data/projects`. Remove an old `APPWEAVE_DOCKER_WORKER_VOLUME=appweave-projects` override if that is not its actual name. The worker checks that the volume exists before launching; it does not create a replacement volume. Do not rename the Compose volume or delete volumes to resolve a name mismatch.
+
+The worker runs `npm ci --ignore-scripts` when `package-lock.json` exists (`npm install --ignore-scripts` only for legacy projects without a lock), then `npm run build`, with a 30-second timeout, 512 MiB memory limit, bounded logs, dropped capabilities, `no-new-privileges`, read-only container filesystem, and a temporary filesystem. Failed or unavailable package builds are reported as failed, preserving the last successful preview. Preview and production routes serve scoped assets from the active build's `dist`; extensionless SPA navigation falls back to its index only when that build's specification explicitly sets `frontend.routing` to `spa`. Missing asset requests remain 404. Do not enable this overlay on a shared host unless Docker socket access is part of the host's trust boundary.
 
 For non-Docker development, the optional `scripts/bootstrap-env.ps1` and `scripts/bootstrap-env.sh` helpers still create a local `.env`.
 

@@ -7,7 +7,7 @@ import { z, ZodError } from 'zod';
 import { Store } from './store.js';
 import { hash, verify, token, userId, ownedProject, ownedProjects } from './auth.js';
 import type { Project, Product, Deployment, UserPreferences, AIBuildDraft, ProjectBuild, SurveyResponse } from './types.js';
-import { join, relative, resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import { createHash, randomBytes } from 'node:crypto';
 import { DEFAULT_AI_PROVIDER_TIMEOUT_MS, DEFAULT_PROVIDER_RETRY_AFTER_SECONDS, decryptProviderKey, encryptProviderKey, HttpAIProvider, resolveAIProviderTimeoutMs } from './ai.js';
 import { ProjectVersionRepo, type VersionFiles } from './versions.js';
@@ -15,22 +15,16 @@ import type { Snapshot, AIProviderName, AIProviderConfig, ProjectSettings } from
 import { normalizeApplicationSpec, parseProviderSpec } from './application-spec.js';
 import { registerMcpRoutes } from './mcp.js';
 import { registerOAuthRoutes } from './oauth.js';
-import { buildProjectArtifacts } from './project-runtime.js';
+import { buildProjectArtifacts, validateArtifact } from './project-runtime.js';
+import { stat } from 'node:fs/promises';
+import { readArtifactResponse } from './artifact-serving.js';
 import { sandboxStatus } from './sandbox-worker.js';
 
 const productInput = z.object({ name: z.string().trim().min(1).max(200), sku: z.string().trim().min(1).max(80), price: z.number().finite().nonnegative(), description: z.string().max(2000).optional() });
 const specInput = z.object({ schema: z.object({ entities: z.record(z.object({ fields: z.record(z.string()), permissions: z.record(z.array(z.string())).optional() })).default({}), relationships: z.array(z.record(z.string())).default([]), roles: z.array(z.string()).default(['admin']), api: z.record(z.unknown()).default({}), frontend: z.record(z.unknown()).default({}) }) });
 const idParam = z.object({ projectId: z.string().uuid() });
 const now = () => new Date().toISOString();
-const readHtml = async (path: string) => { const { readFile } = await import('node:fs/promises'); try { return await readFile(path, 'utf8'); } catch { throw bad('Generated application is unavailable', 404, 'NOT_FOUND'); } };
-const readFirstHtml = async (paths: string[]) => { const { readFile } = await import('node:fs/promises'); for (const path of paths) { try { return await readFile(path, 'utf8'); } catch { /* try the next supported project entrypoint */ } } throw bad('Generated application is unavailable', 404, 'NOT_FOUND'); };
 const escapeHtml = (value: string) => value.replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character] ?? character));
-const normalizePreviewHtml = (html: string) => {
-  if (!html.includes('*** Begin Patch')) return html;
-  const lines = html.replaceAll('\r\n', '\n').split('\n').filter(line => !line.startsWith('***') && !line.startsWith('@@'));
-  const recovered = lines.filter(line => line.startsWith('+')).map(line => line.slice(1)).join('\n').trim();
-  return recovered || '<!doctype html><html><body><main><h1>Preview could not be recovered</h1><p>The project contains an incomplete patch. Reapply the latest project file update.</p></main></body></html>';
-};
 const bad = (message: string, statusCode = 400, code = 'BAD_REQUEST') => Object.assign(new Error(message), { statusCode, code });
 const settingsInput = z.object({ name: z.string().trim().min(1).max(200).optional(), allowedOrigins: z.array(z.string().url().max(2048)).max(50).optional(), usageLimit: z.number().int().nonnegative().max(10_000_000).optional(), lifecycleStatus: z.enum(['active', 'paused', 'archived']).optional(), environment: z.enum(['development', 'preview', 'production']).optional() }).strict();
 const providerParam = z.object({ provider: z.enum(['gemini', 'openai', 'openrouter', 'groq', 'nvidia']) });
@@ -246,9 +240,63 @@ export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; wo
   app.get('/api/v1/projects/:projectId/builds', async request => { const p = project(request); return { builds: store.data.builds.filter(b => b.projectId === p.id), deployments: store.data.deployments.filter(d => d.projectId === p.id) }; });
   app.get('/api/v1/projects/:projectId/builds/:buildId', async request => { const p = project(request); const build = store.data.builds.find(item => item.projectId === p.id && item.id === (request.params as any).buildId); if (!build) throw bad('Build not found', 404, 'NOT_FOUND'); return { build, deployment: store.data.deployments.find(item => item.buildId === build.id) ?? null }; });
   app.get('/api/v1/projects/:projectId/runtime/status', async request => { project(request); return sandboxStatus(); });
-  app.get('/preview/:projectId', async (request, reply) => { const projectItem = ownedProject(store, (request.params as any).projectId, auth(request)); const activeBuild = [...store.data.deployments].reverse().find(d => d.projectId === projectItem.id && d.environment === 'preview' && d.status === 'active'); const latestSpec = [...store.data.specs].reverse().find(spec => spec.projectId === projectItem.id); const version = activeBuild?.version ?? latestSpec?.version; if (!activeBuild && latestSpec) await buildProjectArtifacts(projectItem, workspaceRoot, 'preview', latestSpec.version, `preview-${latestSpec.id}`, latestSpec.schema); const candidates = version ? [join(workspaceRoot, projectItem.id, 'preview', `version-${version}`, 'dist', 'index.html'), join(workspaceRoot, projectItem.id, 'preview', `version-${version}`, 'index.html'), join(workspaceRoot, projectItem.id, 'dist', 'index.html')] : [join(workspaceRoot, projectItem.id, 'dist', 'index.html'), join(workspaceRoot, projectItem.id, 'index.html'), join(workspaceRoot, projectItem.id, 'public', 'index.html'), join(workspaceRoot, projectItem.id, 'src', 'index.html')]; const html = await readFirstHtml(candidates).catch(error => { if ((error as any).code !== 'NOT_FOUND') throw error; return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${escapeHtml(projectItem.name)} · AppWeave</title><style>body{margin:0;background:#f8f5ee;color:#18324a;font:16px system-ui,sans-serif}main{max-width:720px;margin:10vh auto;padding:48px;background:#fffdf8;border:1px solid #e8dcc9;border-radius:24px;box-shadow:0 20px 60px #18324a18}small{color:#a87532;letter-spacing:.14em;text-transform:uppercase}h1{font:700 42px Georgia,serif;margin:18px 0 10px}p{line-height:1.6;color:#566579}</style></head><body><main><small>AppWeave preview</small><h1>${escapeHtml(projectItem.name)}</h1><p>Your project is connected, but it has not written an <code>index.html</code> yet. Ask the connected AI builder to create the page, then refresh this preview.</p></main></body></html>`; }); return reply.type('text/html').send(normalizePreviewHtml(html)); });
-  app.get('/preview/:projectId/*', async (request, reply) => { const projectItem = ownedProject(store, (request.params as any).projectId, auth(request)); const requested = String((request.params as any)['*'] ?? ''); const clean = requested.replaceAll('\\', '/'); const root = resolve(workspaceRoot, projectItem.id); if (!clean || clean.includes('\0')) throw bad('Invalid preview asset path', 400, 'BAD_REQUEST'); const activeBuild = [...store.data.deployments].reverse().find(d => d.projectId === projectItem.id && d.environment === 'preview' && d.status === 'active'); const latestSpec = [...store.data.specs].reverse().find(spec => spec.projectId === projectItem.id); const version = activeBuild?.version ?? latestSpec?.version; const candidates = version ? [resolve(root, 'preview', `version-${version}`, 'dist', clean), resolve(root, 'dist', clean)] : [resolve(root, 'dist', clean)]; if (candidates.some(target => relative(root, target).startsWith('..'))) throw bad('Invalid preview asset path', 400, 'BAD_REQUEST'); const { readFile } = await import('node:fs/promises'); try { const body = await readFile(candidates[0]).catch(() => readFile(candidates[1])); const type = clean.endsWith('.html') ? 'text/html' : clean.endsWith('.js') ? 'text/javascript' : clean.endsWith('.css') ? 'text/css' : clean.endsWith('.json') ? 'application/json' : clean.endsWith('.svg') ? 'image/svg+xml' : clean.endsWith('.png') ? 'image/png' : clean.endsWith('.jpg') || clean.endsWith('.jpeg') ? 'image/jpeg' : clean.endsWith('.woff2') ? 'font/woff2' : 'application/octet-stream'; return reply.type(type).send(body); } catch { throw bad('Preview asset unavailable', 404, 'NOT_FOUND'); } });
-  app.get('/app/:projectId', async (request, reply) => { const p = ownedProject(store, (request.params as any).projectId, auth(request)); const build = [...store.data.deployments].reverse().find(d => d.projectId === p.id && d.environment === 'production' && d.status === 'active'); if (!build) throw bad('No active production build', 404, 'NOT_FOUND'); return reply.type('text/html').send(await readHtml(join(process.env.PROJECT_WORKSPACE_ROOT ?? './data/projects', p.id, 'production', `version-${build.version}`, 'index.html'))); });
+  const activeArtifact = (p: Project, environment: 'preview'|'production') => [...store.data.deployments].reverse().find(d => d.projectId === p.id && d.environment === environment && d.status === 'active');
+  const spaRouting = (p: Project, environment: 'preview'|'production') => {
+    const active = activeArtifact(p, environment);
+    const spec = active ? store.data.specs.find(item => item.projectId === p.id && item.version === active.version) : [...store.data.specs].reverse().find(item => item.projectId === p.id);
+    return spec?.schema?.frontend?.routing === 'spa';
+  };
+  const artifactResponse = async (p: Project, environment: 'preview'|'production', root: string, path: string) => {
+    try { return await readArtifactResponse(root, path, `/${environment === 'preview' ? 'preview' : 'app'}/${p.id}/`, spaRouting(p, environment)); }
+    catch { throw bad('Application artifact unavailable', 404, 'NOT_FOUND'); }
+  };
+  const previewRoot = async (p: Project): Promise<string | undefined> => {
+    const active = [...store.data.deployments].reverse().find(d => d.projectId === p.id && d.environment === 'preview' && d.status === 'active');
+    if (active) return join(workspaceRoot, p.id, 'preview', `version-${active.version}`, 'dist');
+    const root = join(workspaceRoot, p.id);
+    // Unbuilt package projects must never fall back to source HTML or stale root dist.
+    if (await stat(join(root, 'package.json')).then(() => true, () => false)) return undefined;
+    for (const candidate of [join(root, 'dist'), root, join(root, 'public')]) {
+      try { await validateArtifact(candidate); return candidate; } catch { /* try a genuine static entrypoint */ }
+    }
+  };
+  app.get('/preview/:projectId', async (request, reply) => {
+    const p = ownedProject(store, (request.params as any).projectId, auth(request));
+    let root = await previewRoot(p);
+    if (!root) {
+      const latest = [...store.data.specs].reverse().find(spec => spec.projectId === p.id);
+      if (latest) { await buildProject(p, auth(request), 'preview', latest.version, request.id); root = await previewRoot(p); }
+    }
+    if (!root) {
+      const packageExists = await stat(join(workspaceRoot, p.id, 'package.json')).then(() => true, () => false);
+      if (packageExists) throw bad('No successful isolated preview build', 404, 'NOT_FOUND');
+      return reply.type('text/html').send(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${escapeHtml(p.name)} · AppWeave</title><style>body{margin:0;background:#f8f5ee;color:#18324a;font:16px system-ui,sans-serif}main{max-width:720px;margin:10vh auto;padding:48px;background:#fffdf8;border:1px solid #e8dcc9;border-radius:24px;box-shadow:0 20px 60px #18324a18}small{color:#a87532;letter-spacing:.14em;text-transform:uppercase}h1{font:700 42px Georgia,serif;margin:18px 0 10px}p{line-height:1.6;color:#566579}</style></head><body><main><small>AppWeave preview</small><h1>${escapeHtml(p.name)}</h1><p>Your project is connected, but it has not written an <code>index.html</code> yet. Ask the connected AI builder to create the page, then refresh this preview.</p></main></body></html>`);
+    }
+    const response = await artifactResponse(p, 'preview', root, '');
+    return reply.type(response.type).send(response.body);
+  });
+  app.get('/preview/:projectId/*', async (request, reply) => {
+    const p = ownedProject(store, (request.params as any).projectId, auth(request));
+    const path = String((request.params as any)['*'] ?? '');
+    const root = await previewRoot(p);
+    if (!root) throw bad('Preview asset unavailable', 404, 'NOT_FOUND');
+    const response = await artifactResponse(p, 'preview', root, path);
+    return reply.type(response.type).send(response.body);
+  });
+  app.get('/app/:projectId', async (request, reply) => {
+    const p = ownedProject(store, (request.params as any).projectId, auth(request));
+    const build = activeArtifact(p, 'production');
+    if (!build) throw bad('No active production build', 404, 'NOT_FOUND');
+    const response = await artifactResponse(p, 'production', join(workspaceRoot, p.id, 'production', `version-${build.version}`, 'dist'), '');
+    return reply.type(response.type).send(response.body);
+  });
+  app.get('/app/:projectId/*', async (request, reply) => {
+    const p = ownedProject(store, (request.params as any).projectId, auth(request));
+    const build = activeArtifact(p, 'production');
+    if (!build) throw bad('No active production build', 404, 'NOT_FOUND');
+    const response = await artifactResponse(p, 'production', join(workspaceRoot, p.id, 'production', `version-${build.version}`, 'dist'), String((request.params as any)['*'] ?? ''));
+    return reply.type(response.type).send(response.body);
+  });
   app.get('/api/v1/projects/:projectId/deployments', async request => { const p = project(request); return { deployments: store.data.deployments.filter(x => x.projectId === p.id) }; });
   const createVersion = async (request: any, reason: string, restoredSpecs?: any[]) => { const p = project(request); const uid = auth(request); const prior = store.data.snapshots.filter(x => x.projectId === p.id); const state = { specs: (restoredSpecs ?? store.data.specs.filter(x => x.projectId === p.id)).map(x => ({ ...x })) }; const files = versionFiles(state.specs); const commitSha = await repoFor(p.id).commit(files, `version ${prior.length + 1}: ${reason}`); const snapshot: Snapshot = { id: store.id(), projectId: p.id, version: prior.length + 1, reason, state, files, commitSha, createdAt: now(), createdBy: uid }; await store.commit(db => db.snapshots.push(snapshot)); return snapshot; };
   app.post('/api/v1/projects/:projectId/snapshots', async (request, reply) => { const b = z.object({ reason: z.string().min(1).max(200).default('manual') }).parse(request.body ?? {}); return reply.code(201).send(await createVersion(request, b.reason)); });
@@ -284,7 +332,7 @@ export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; wo
     const uid = auth(request); const body = z.object({ projectId: z.string().uuid(), provider: providerParam.shape.provider.optional(), model: z.string().trim().min(1).max(200).optional(), draftId: z.string().uuid().optional(), prompt: z.string().trim().min(1).max(4000) }).parse(request.body); const p = ownedProject(store, body.projectId, uid); const existing = body.draftId ? store.data.aiBuildDrafts.find(x => x.id === body.draftId && x.projectId === p.id) : undefined; if (body.draftId && !existing) throw bad('AI build not found', 404, 'NOT_FOUND'); if (existing?.status === 'running') throw Object.assign(bad('AI build is already running', 409, 'AI_BUILD_IN_PROGRESS'), { provider: existing.attemptedProvider ?? existing.provider, model: existing.attemptedModel ?? existing.model }); if (existing?.nextRetryAt && Date.parse(existing.nextRetryAt) > Date.now()) throw Object.assign(bad('AI provider retry window has not elapsed', 429, 'PROVIDER_RETRY_LATER'), { retryAfter: Math.max(1, Math.ceil((Date.parse(existing.nextRetryAt) - Date.now()) / 1000)), nextRetryAt: existing.nextRetryAt, provider: existing.attemptedProvider ?? existing.provider, model: existing.attemptedModel ?? existing.model, diagnostics: existing.diagnostics }); const selectedProvider = body.provider ?? store.data.providerConfigs.find(x => x.projectId === p.id && x.keyConfigured)?.provider ?? 'openai'; const draft = existing ?? ({ id: store.id(), projectId: p.id, createdBy: uid, prompt: { request: safePrompt(body.prompt), fields: {} }, provider: selectedProvider, model: body.model ?? providerDefaults[selectedProvider].model, stage: 'draft', status: 'draft', requestId: request.id, diagnostics: [], attempts: 0, context: { memory: [], graph: [] }, createdAt: now(), updatedAt: now() } as AIBuildDraft); if (!existing) await store.commit(db => db.aiBuildDrafts.push(draft)); draft.provider = body.provider ?? draft.provider; if (body.model) draft.model = body.model; draft.status = 'running'; draft.stage = 'provider_request'; draft.requestId = request.id; draft.attemptedProvider = draft.provider; draft.attemptedModel = draft.model; delete draft.retryAfter; delete draft.nextRetryAt; draft.updatedAt = now(); await store.commit(db => db.aiBuildDrafts);
     const config = store.data.providerConfigs.find(x => x.projectId === p.id && x.keyConfigured && x.provider === draft.provider); if (!config) { draft.status = 'failed'; draft.stage = 'provider_config'; draft.diagnostics = [{ code: 'PROVIDER_NOT_CONFIGURED', message: 'No AI provider is configured for this project' }]; await store.commit(db => db.aiBuildDrafts); throw bad('No AI provider is configured for this project', 422, 'PROVIDER_NOT_CONFIGURED'); }
     const memory = store.data.projectMemory.filter(x => x.projectId === p.id).slice(-10).map(x => x.content).join('\n'); const graph = store.data.graphNodes.filter(x => x.projectId === p.id).slice(-20).map(x => `${x.type}:${x.label}`).join(', ');
-    const basePrompt = `You are AppWeave's application architect. Return ONLY valid JSON with schema.entities, schema.relationships, schema.roles, schema.permissions, schema.api, schema.frontend, schema.pages, and schema.features. Field types may be string, number, boolean, date, enum, or multi_select. Entity fields may be strings or objects with type, required, options, and description. Context: ${memory}\nGraph: ${graph}\nRequest: ${draft.prompt.request}`;
+    const basePrompt = `You are AppWeave's application architect. All new web applications require React + Vite. Set schema.frontend.framework to "react-vite" and schema.frontend.language to "jsx" unless TypeScript is explicitly requested (then "tsx"). index.html is only the Vite entry document; UI and behavior belong in React components. Preserve the existing backend, database and authentication integrations. Return ONLY valid JSON with schema.entities, schema.relationships, schema.roles, schema.permissions, schema.api, schema.frontend, schema.pages, and schema.features. Field types may be string, number, boolean, date, enum, or multi_select. Entity fields may be strings or objects with type, required, options, and description. Context: ${memory}\nGraph: ${graph}\nRequest: ${draft.prompt.request}`;
     const stages: Array<{ name: string; status: 'completed'|'failed'; detail?: string }> = [{ name: 'prompt_context', status: 'completed' }]; let output = ''; let parsed = normalizeApplicationSpec(null); let attempts = 0; let prompt = basePrompt;
     while (attempts < 3) { attempts++; try { output = (await providerFor({ ...config, model: draft.model }).generate(prompt)).output; } catch (error) { stages.push({ name: 'provider_request', status: 'failed', detail: 'Provider request failed' }); draft.status = 'failed'; draft.stage = 'provider_request'; draft.attempts = attempts; const retryAfter = (error as any)?.retryAfter ?? ((String((error as any)?.code) === 'PROVIDER_TIMEOUT' || String((error as any)?.code) === 'PROVIDER_RATE_LIMITED') ? DEFAULT_PROVIDER_RETRY_AFTER_SECONDS : undefined); const nextRetryAt = retryAfter ? new Date(Date.now() + retryAfter * 1000).toISOString() : undefined; draft.retryAfter = retryAfter; draft.nextRetryAt = nextRetryAt; draft.attemptedProvider = draft.provider; draft.attemptedModel = draft.model; draft.diagnostics = [{ code: String((error as any)?.code ?? 'generation_failed'), message: redact(String((error as any)?.message ?? 'Provider request failed')), provider: draft.provider, model: draft.model, retryAfter, nextRetryAt }]; draft.updatedAt = now(); await store.commit(db => db.aiBuildDrafts); throw Object.assign(aiFailure('provider_request', request.id, error), { retryAfter, nextRetryAt, provider: draft.provider, model: draft.model }); } parsed = output.trim() ? parseProviderSpec(output) : { schema: {} as any, diagnostics: [{ path: '$', message: 'Provider returned an empty response', code: 'empty_response' }] }; if (!parsed.diagnostics.length) break; if (attempts < 3) prompt = `${basePrompt}\nRepair the previous output. Diagnostics: ${JSON.stringify(parsed.diagnostics)}\nPrevious output: ${redact(output).slice(0, 12000)}`; }
     stages.push({ name: 'validate_specification', status: parsed.diagnostics.length ? 'failed' : 'completed', detail: parsed.diagnostics.length ? `${parsed.diagnostics.length} diagnostic(s)` : undefined });

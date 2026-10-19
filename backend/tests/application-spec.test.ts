@@ -19,4 +19,15 @@ describe('application specification normalization', () => {
     expect(result.schema.pages[0].route).toBe('/');
   });
 
+  it.each([
+    ['Build a dashboard', undefined],
+    ['Build a React dashboard', undefined],
+    ['Build a TypeScript React dashboard', 'typescript'],
+    ['Build a TSX React dashboard', 'tsx'],
+  ])('enforces the React/Vite frontend contract for %s', (prompt, language) => {
+    const result = parseProviderSpec(JSON.stringify({ schema: { frontend: language ? { language } : {}, features: [prompt] } }));
+    expect(result.diagnostics).toEqual([]);
+    expect(result.schema.frontend).toMatchObject({ framework: 'react-vite', language: language ?? 'jsx' });
+  });
+
 });

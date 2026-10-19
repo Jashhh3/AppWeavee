@@ -81,6 +81,8 @@ describe('AppWeave API', () => {
   it('versions specifications and records deployment metadata', async () => {
     const auth = { authorization: `Bearer ${await register('deploy@example.com')}` }; const p = await app.inject({ method: 'POST', url: '/api/v1/projects', headers: auth, payload: { name: 'Deploy' } }); const id = p.json().id; expect(p.json().previewUrl).toBe(`http://localhost:3000/preview/${id}`); expect((await app.inject({ method: 'GET', url: '/api/v1/projects', headers: auth })).json().projects[0].previewUrl).toBe(`http://localhost:3000/preview/${id}`);
     const spec = await app.inject({ method: 'POST', url: `/api/v1/projects/${id}/specifications/versions`, headers: auth, payload: { schema: { Product: { sku: 'string' } } } }); expect(spec.json().version).toBe(1);
+    await mkdir(join(dir, 'projects', id), { recursive: true });
+    await writeFile(join(dir, 'projects', id, 'index.html'), '<!doctype html><h1>Deploy</h1>');
     const dep = await app.inject({ method: 'POST', url: `/api/v1/projects/${id}/deployments`, headers: auth, payload: { environment: 'preview', version: 1 } }); expect(dep.statusCode).toBe(200);
     expect(dep.json().url).toContain(`/preview/${id}`);
     const preview = await app.inject({ method: 'GET', url: `/preview/${id}`, headers: auth }); expect(preview.statusCode).toBe(200); expect(preview.headers['content-type']).toContain('text/html'); expect(preview.body).toContain('Deploy');
@@ -104,19 +106,16 @@ describe('AppWeave API', () => {
     expect(preview.body).toContain('source artifact');
   });
 
-  it('serves the generated project form from preview before an explicit build', async () => {
+  it('reports unavailable isolated builds when opening a generated preview', async () => {
     const auth = { authorization: `Bearer ${await register('preview-template@example.com')}` };
     const project = await app.inject({ method: 'POST', url: '/api/v1/projects', headers: auth, payload: { name: 'Inventory Form' } });
     const id = project.json().id;
     await app.inject({ method: 'POST', url: `/api/v1/projects/${id}/specifications/versions`, headers: auth, payload: { schema: { entities: { Product: { fields: { sku: 'string', price: 'number' } } } } } });
     const preview = await app.inject({ method: 'GET', url: `/preview/${id}`, headers: auth });
-    expect(preview.statusCode).toBe(200);
-    expect(preview.body).toContain('Generated from validated specification.');
-    expect(preview.body).toContain('Product');
-    expect(preview.body).not.toContain('has not written an');
+    expect(preview.statusCode).toBe(422);
+    expect(preview.json().error.code).toBe('BUILD_FAILED');
     const styles = await app.inject({ method: 'GET', url: `/preview/${id}/src/styles.css`, headers: auth });
-    expect(styles.statusCode).toBe(200);
-    expect(styles.headers['content-type']).toContain('text/css');
+    expect(styles.statusCode).toBe(404);
   });
 
   it('persists bounded build failure state without activating a preview', async () => {
@@ -140,10 +139,12 @@ describe('AppWeave API', () => {
     const id = p.json().id;
     await app.inject({ method: 'POST', url: `/api/v1/projects/${id}/specifications/versions`, headers: auth, payload: { schema: { entities: { Order: { fields: { total: 'number' } } } } } });
     const built = await app.inject({ method: 'POST', url: `/api/v1/projects/${id}/builds`, headers: auth, payload: { version: 1 } });
-    expect(built.statusCode).toBe(200);
+    expect(built.statusCode).toBe(422);
     const files = await Promise.all(['package.json', 'package-lock.json', 'src/main.jsx'].map(async file => { await access(join(dir, 'projects', id, file)); return file; }));
     expect(files).toHaveLength(3);
-    expect(built.json().buildLog).toEqual(expect.arrayContaining([expect.stringContaining('generated React/Vite source template'), expect.stringContaining('worker unavailable')]));
+    const builds = await app.inject({ method: 'GET', url: `/api/v1/projects/${id}/builds`, headers: auth });
+    expect(builds.json().builds[0]).toMatchObject({ status: 'failed', runtime: 'unavailable', artifacts: [] });
+    expect(builds.json().builds[0].logs).toEqual(expect.arrayContaining([expect.stringContaining('worker unavailable')]));
     const runtime = await app.inject({ method: 'GET', url: `/api/v1/projects/${id}/runtime/status`, headers: auth });
     expect(runtime.statusCode).toBe(200);
     expect(runtime.json()).toMatchObject({ available: false, runtime: 'unavailable', limits: { timeoutMs: 30000, memoryMb: 512 } });
@@ -215,14 +216,14 @@ describe('AppWeave API', () => {
     const p = await app.inject({ method: 'POST', url: '/api/v1/projects', headers: auth, payload: { name: 'Generate' } }); const id = p.json().id;
     await app.inject({ method: 'PATCH', url: `/api/v1/projects/${id}/providers/gemini`, headers: auth, payload: { baseUrl: 'https://generativelanguage.googleapis.com', model: 'gemini-test', key: 'gemini-secret' } });
     const response = await app.inject({ method: 'POST', url: '/api/v1/ai/generate', headers: auth, payload: { projectId: id, prompt: 'Create a catalog' } });
-     expect(response.statusCode).toBe(200); expect(response.json()).toMatchObject({ provider: 'gemini', configured: true, applicationSpec: { schema: { roles: ['admin'] } }, build: { status: 'ready', runtime: 'artifact_only', logs: expect.arrayContaining([expect.stringContaining('worker unavailable')]) }, previewStatus: 'ready' });
+     expect(response.statusCode).toBe(200); expect(response.json()).toMatchObject({ provider: 'gemini', configured: true, applicationSpec: { schema: { roles: ['admin'] } }, build: { status: 'failed', runtime: 'unavailable', logs: expect.arrayContaining([expect.stringContaining('worker unavailable')]) }, previewStatus: 'failed' });
      expect(JSON.stringify(response.json())).not.toContain('gemini-secret');
      for (const file of ['package.json', 'package-lock.json', 'index.html', 'src/main.jsx', 'src/styles.css']) await access(join(dir, 'projects', id, file));
      const builds = await app.inject({ method: 'GET', url: `/api/v1/projects/${id}/builds`, headers: auth });
-     expect(builds.json().builds[0]).toMatchObject({ status: 'ready', runtime: 'artifact_only', artifacts: ['dist/index.html'] });
-     expect(builds.json().deployments[0]).toMatchObject({ environment: 'preview', status: 'active' });
+     expect(builds.json().builds[0]).toMatchObject({ status: 'failed', runtime: 'unavailable', artifacts: [] });
+     expect(builds.json().deployments[0]).toMatchObject({ environment: 'preview', status: 'failed' });
      const preview = await app.inject({ method: 'GET', url: `/preview/${id}`, headers: auth });
-     expect(preview.statusCode).toBe(200); expect(preview.body).toContain('Generated from validated specification.'); expect(preview.body).toContain('Generate');
+     expect(preview.statusCode).toBe(422); expect(preview.json().error.code).toBe('BUILD_FAILED');
   });
 
   it('does not allow generation for another owner or invalid provider output', async () => {
