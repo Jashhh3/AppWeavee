@@ -12,7 +12,7 @@ cp .env.example .env
 npm run dev
 ```
 
-Set `VITE_API_URL` to the backend origin and `VITE_PUBLIC_CLIENT_ID` to the public client identifier. When the API is absent, screens show explicit unavailable states and do not fabricate operational data.
+Set `VITE_API_URL` to the backend origin and `VITE_PUBLIC_CLIENT_ID` to the public client identifier. Generated survey frontends can import `submitSurveyResponse` from `src/surveyResponseClient.ts`; it posts `{ surveyId?, answers, consent: true }` to `/api/v1/projects/{projectId}/survey-responses` by default. Set `VITE_SURVEY_RESPONSE_URL` to an absolute URL or a template containing `{projectId}` when the response service is hosted elsewhere. The client includes browser credentials and exposes structured `SurveyResponseError` details for success/error UI states.
 
 ## Checks
 
