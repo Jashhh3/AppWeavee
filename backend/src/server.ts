@@ -48,7 +48,7 @@ const publicBaseUrl = () => (process.env.PUBLIC_BASE_URL ?? 'http://localhost:30
 const previewUrl = (projectId: string) => `${publicBaseUrl()}/preview/${projectId}`;
 const aiFailure = (stage: string, requestId: string, cause: unknown, diagnostics: unknown[] = []) => { const source = cause as any; const provider = String(source?.code ?? '').startsWith('PROVIDER_'); const sourceDiagnostic = source?.code || source?.message ? [{ code: String(source?.code ?? 'generation_failed'), message: redact(String(source?.message ?? 'The AI generation pipeline failed before producing a result.')).slice(0, 300), provider: source?.provider, model: source?.model, retryAfter: source?.retryAfter }] : []; const safeDiagnostics = diagnostics.length || source?.diagnostics?.length || sourceDiagnostic.length ? [...diagnostics, ...(source?.diagnostics ?? []), ...sourceDiagnostic] : [{ code: stage === 'persist_context' ? 'persistence_failed' : 'generation_failed', message: stage === 'persist_context' ? 'The generated specification could not be saved. Retry the request and check server storage.' : 'The AI generation pipeline failed before producing a result. Retry the request.' }]; return Object.assign(new Error(provider ? source.message : 'AI generation failed'), { statusCode: provider ? source.statusCode : 500, code: provider ? source.code : 'AI_BUILD_FAILED', stage, requestId, diagnostics: safeDiagnostics }); };
 
-export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; workspaceRoot?: string; encryptionKey?: string; fetch?: typeof fetch; aiTimeoutMs?: number; mcpLocalTestMode?: boolean } = {}): Promise<FastifyInstance> {
+export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; workspaceRoot?: string; encryptionKey?: string; fetch?: typeof fetch; aiTimeoutMs?: number; mcpLocalTestMode?: boolean; previewVerifier?: (projectId: string, previewUrl: string) => Promise<boolean> } = {}): Promise<FastifyInstance> {
   const secret = opts.jwtSecret ?? process.env.JWT_SECRET ?? 'development-only-change-me';
   const store = await new Store(opts.dataFile ?? process.env.DATA_FILE ?? './data/appweave.json', process.env.DATABASE_URL).load();
   const encryptionKey = opts.encryptionKey ?? process.env.AI_ENCRYPTION_KEY ?? (process.env.NODE_ENV === 'test' ? 'test-only-development-encryption-key' : undefined);
@@ -92,7 +92,7 @@ export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; wo
   const setSession = (reply: any, uid: string) => reply.setCookie(cookieName, token(uid, secret), { httpOnly: true, sameSite: 'lax', secure: cookieSecure, path: '/', maxAge: Number.isFinite(cookieMaxAge) && cookieMaxAge > 0 ? cookieMaxAge : 604800 });
 
 
-  app.get('/health', async () => ({ status: 'ok', service: 'appweave-backend', version: appVersion, time: now(), storage: process.env.DATABASE_URL ? 'postgresql' : 'file-backed-local', providers: [...new Map(store.data.providerConfigs.map(c => [c.provider, { provider: c.provider, baseUrl: c.baseUrl, model: c.model, configured: Boolean(c.keyConfigured && c.keyCiphertext) }])).values()] }));
+  app.get('/health', async () => ({ status: 'ok', service: 'appweave-backend', version: appVersion, time: now(), storage: process.env.DATABASE_URL ? 'postgresql' : 'file-backed-local', pool: store.poolStatus(), providers: [...new Map(store.data.providerConfigs.map(c => [c.provider, { provider: c.provider, baseUrl: c.baseUrl, model: c.model, configured: Boolean(c.keyConfigured && c.keyCiphertext) }])).values()] }));
   app.get('/api/v1/auth/me', async request => { const uid = auth(request); const u = store.data.users.find(x => x.id === uid); if (!u) throw bad('User not found', 404, 'NOT_FOUND'); return { user: { id: u.id, email: u.email } }; });
   app.post('/api/v1/auth/register', async (request, reply) => {
     const body = z.object({ email: z.string().email().transform(x => x.toLowerCase()), password: z.string().min(8).max(200) }).parse(request.body);
@@ -355,14 +355,25 @@ export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; wo
    registerOAuthRoutes(app, store, secret, cookieName);
   const requestedMcpLocalTestMode = opts.mcpLocalTestMode ?? process.env.APPWEAVE_MCP_LOCAL_TEST_MODE === 'true';
   const mcpLocalTestMode = requestedMcpLocalTestMode && (process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'test');
-  registerMcpRoutes({ app, store, workspaceRoot, secret, cookieName, repoFor, audit, mcpUserId: mcpUser, rebuildPreview: async projectId => {
+  const verifyPreview = opts.previewVerifier ?? (async (projectId: string) => {
+    const active = [...store.data.deployments].reverse().find(item => item.projectId === projectId && item.environment === 'preview' && item.status === 'active');
+    if (!active) return false;
+    try { await validateArtifact(join(workspaceRoot, projectId, 'preview', `version-${active.version}`, 'dist')); return true; } catch { return false; }
+  });
+  registerMcpRoutes({ app, store, workspaceRoot, secret, cookieName, repoFor, audit, mcpUserId: mcpUser, createSpecVersion: async (projectId, createdBy) => {
+    if (store.data.specs.some(item => item.projectId === projectId)) return;
+    const schema = normalizeApplicationSpec({ schema: { entities: {}, relationships: [], roles: ['admin'], permissions: {}, api: {}, frontend: { source: 'project-files' }, pages: [], features: ['existing project files'] } }).schema;
+    const spec = { id: store.id(), projectId, version: 1, schema, createdAt: now(), createdBy };
+    await store.commit(db => { if (!db.specs.some(item => item.projectId === projectId)) db.specs.push(spec); });
+    return spec;
+  }, rebuildPreview: async projectId => {
     const p = store.data.projects.find(item => item.id === projectId);
      const newest = [...store.data.specs].filter(item => item.projectId === projectId).sort((a, b) => b.version - a.version)[0];
      if (p && newest) {
        try { await buildProject(p, newest.createdBy, 'preview', newest.version, `mcp-${store.id()}`); }
        catch { /* failed builds are recorded while the active artifact remains untouched */ }
      }
-  }, allowUnauthenticated: mcpLocalTestMode });
+  }, verifyPreview, allowUnauthenticated: mcpLocalTestMode });
   return app;
 }
 if (process.env.NODE_ENV !== 'test') buildApp().then(app => app.listen({ port: Number(process.env.PORT ?? 3000), host: '0.0.0.0' })).catch(err => { console.error(err); process.exit(1); });
