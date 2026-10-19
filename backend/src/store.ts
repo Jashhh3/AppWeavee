@@ -2,14 +2,17 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import type { DB } from './types.js';
-import { Pool } from 'pg';
+import pg from 'pg';
+import type { Pool as PoolType } from 'pg';
 import { readFile as readTextFile } from 'node:fs/promises';
+
+const { Pool } = pg;
 
 const empty = (): DB => ({ users: [], userPreferences: [], projects: [], projectSettings: [], providerConfigs: [], products: [], surveyResponses: [], audits: [], specs: [], deployments: [], builds: [], snapshots: [], projectMemory: [], decisions: [], buildHistory: [], graphNodes: [], graphEdges: [], aiBuildDrafts: [], mcpTokens: [], personalAccessTokens: [], oauthClients: [], oauthAuthorizationCodes: [], oauthRefreshTokens: [] });
 export class Store {
   private db: DB = empty();
   private writeQueue: Promise<void> = Promise.resolve();
-  private pool?: Pool;
+  private pool?: PoolType;
   constructor(private readonly file: string, private readonly databaseUrl = process.env.DATABASE_URL) {}
   async load() {
     if (this.databaseUrl) {
