@@ -1,0 +1,13 @@
+CREATE TABLE IF NOT EXISTS appweave_state (id integer PRIMARY KEY CHECK (id = 1), state jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE IF NOT EXISTS users (id uuid PRIMARY KEY, email text UNIQUE NOT NULL, password_hash text NOT NULL, created_at timestamptz NOT NULL);
+CREATE TABLE IF NOT EXISTS sessions_tokens (id uuid PRIMARY KEY, user_id text NOT NULL, kind text NOT NULL, token_hash text NOT NULL, created_at timestamptz NOT NULL, revoked_at timestamptz, data jsonb NOT NULL);
+CREATE TABLE IF NOT EXISTS projects (id uuid PRIMARY KEY, owner_id text NOT NULL, name text NOT NULL, environment text NOT NULL, public_client_id text UNIQUE NOT NULL, preview_url text NOT NULL, production_url text NOT NULL, created_at timestamptz NOT NULL, updated_at timestamptz NOT NULL);
+CREATE TABLE IF NOT EXISTS project_settings (project_id uuid PRIMARY KEY, data jsonb NOT NULL);
+CREATE TABLE IF NOT EXISTS provider_configs (id uuid PRIMARY KEY, project_id uuid NOT NULL, provider text NOT NULL, data jsonb NOT NULL, UNIQUE(project_id, provider));
+CREATE TABLE IF NOT EXISTS survey_responses (id uuid PRIMARY KEY, project_id uuid NOT NULL, submitted_by text NOT NULL, survey_id text, answers jsonb NOT NULL, consent boolean NOT NULL, created_at timestamptz NOT NULL);
+CREATE TABLE IF NOT EXISTS audits (id uuid PRIMARY KEY, project_id uuid, user_id text, action text NOT NULL, request_id text NOT NULL, metadata jsonb NOT NULL, created_at timestamptz NOT NULL);
+CREATE TABLE IF NOT EXISTS builds (id uuid PRIMARY KEY, project_id uuid NOT NULL, data jsonb NOT NULL);
+CREATE TABLE IF NOT EXISTS deployments (id uuid PRIMARY KEY, project_id uuid NOT NULL, data jsonb NOT NULL);
+CREATE TABLE IF NOT EXISTS versions (id uuid PRIMARY KEY, project_id uuid NOT NULL, data jsonb NOT NULL);
+CREATE INDEX IF NOT EXISTS audits_project_created_idx ON audits (project_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS survey_project_created_idx ON survey_responses (project_id, created_at DESC);
