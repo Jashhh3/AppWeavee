@@ -13,12 +13,12 @@ describe('generated React/Vite project template', () => {
     try {
       const extension = language === 'jsx' ? 'jsx' : 'tsx';
       const files = await generateReactViteTemplate(root, project, { entities: { Product: { fields: { name: 'string' } } }, relationships: [], roles: ['admin'], permissions: {}, api: {}, frontend: { framework: 'react-vite', language }, pages: [], features: [] });
-      expect(files).toEqual(expect.arrayContaining(['package.json', 'package-lock.json', 'index.html', 'vite.config.js', `src/main.${extension}`, `src/App.${extension}`, 'src/index.css', '.env.example', 'README.md']));
+       expect(files).toEqual(expect.arrayContaining(['package.json', 'package-lock.json', 'index.html', 'vite.config.js', `src/main.${extension}`, `src/App.${extension}`, 'src/style.css', '.env.example', 'README.md']));
       const manifest = JSON.parse(await readFile(join(root, 'package.json'), 'utf8'));
       expect(manifest.dependencies).toMatchObject({ react: '18.3.1', 'react-dom': '18.3.1' });
       expect(manifest.devDependencies).toMatchObject({ vite: '5.4.8', '@vitejs/plugin-react': '4.3.1' });
       expect(await readFile(join(root, 'index.html'), 'utf8')).toContain(`src="/src/main.${extension}"`);
-      expect(await readFile(join(root, `src/main.${extension}`), 'utf8')).toContain("import './index.css'");
+       expect(await readFile(join(root, `src/main.${extension}`), 'utf8')).toContain("import './style.css'");
       if (extension === 'tsx') {
         expect(files).toContain('tsconfig.json');
         expect(manifest.devDependencies).toMatchObject({ typescript: '5.5.4', '@types/react': '18.3.12', '@types/react-dom': '18.3.1' });

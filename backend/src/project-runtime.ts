@@ -5,6 +5,7 @@ import type { Project, ApplicationSchema } from './types.js';
 import { generateReactViteTemplate } from './project-template.js';
 import { runSandboxedViteBuild } from './sandbox-worker.js';
 import { validateGeneratedReactSource } from './project-source.js';
+import { requireProjectStorage } from './project-storage.js';
 
 export type ArtifactBuild = { status: 'ready'|'failed'; runtime: 'artifact_only'|'docker_worker'|'unavailable'; logs: string[]; artifacts: string[]; error?: string };
 const ignored = new Set(['.git', 'node_modules', 'dist', 'build', 'preview', 'production']);
@@ -52,14 +53,13 @@ export async function validateArtifact(root: string): Promise<string> {
 }
 
 export async function buildProjectArtifacts(project: Project, workspaceRoot: string, environment: 'preview'|'production', version: number, _buildId: string, schema?: ApplicationSchema): Promise<ArtifactBuild> {
-  const root = join(workspaceRoot, project.id);
+  const root = await requireProjectStorage(workspaceRoot, project.id);
   const parent = join(root, environment, `version-${version}`);
   const out = join(parent, 'dist');
   const staging = join(parent, `.staging-${randomUUID()}`);
   const logs = ['source validation started'];
   let runtime: ArtifactBuild['runtime'] = 'unavailable';
   try {
-    await mkdir(root, { recursive: true });
     const source = await files(root);
     // Existing dist-only static projects are not empty generated projects.
     const existingDist = await stat(join(root, 'dist', 'index.html')).then(() => true, () => false);

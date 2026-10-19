@@ -9,6 +9,7 @@ export type ProjectDatabaseResource = {
   schemaVersion: number;
   kind: 'postgres-database';
 };
+export type DatabaseTestRecord = { id: string; fullName: string; email: string; phone: string; city: string; testMessage: string; createdAt: string };
 
 const VERSION = 1;
 const identifier = (value: string) => `"${value.replaceAll('"', '""')}"`;
@@ -165,8 +166,12 @@ export class ProjectDatabaseManager {
       await client.query("INSERT INTO app.state (id, state) VALUES (1, '{}'::jsonb) ON CONFLICT (id) DO NOTHING");
       await client.query('REVOKE ALL ON ALL TABLES IN SCHEMA app FROM PUBLIC');
       await client.query(`REVOKE ALL ON ALL TABLES IN SCHEMA app FROM ${role}`);
+      await client.query(`CREATE TABLE IF NOT EXISTS app.database_test_submissions (
+        id uuid PRIMARY KEY, full_name text NOT NULL, email text NOT NULL, phone text NOT NULL,
+        city text NOT NULL, test_message text NOT NULL, created_at timestamptz NOT NULL DEFAULT now())`);
       await client.query(`GRANT USAGE ON SCHEMA app TO ${role}`);
       await client.query(`GRANT SELECT, INSERT, UPDATE, DELETE ON app.state TO ${role}`);
+      await client.query(`GRANT SELECT, INSERT ON app.database_test_submissions TO ${role}`);
       await client.query('INSERT INTO app.schema_migrations (version) VALUES ($1) ON CONFLICT (version) DO NOTHING', [VERSION]);
     });
   }
@@ -203,6 +208,25 @@ export class ProjectDatabaseManager {
       if (!result.rows.length) return {};
       if (!object(result.rows[0].state)) throw new Error('Invalid stored project state.');
       return result.rows[0].state;
+    });
+  }
+
+  async insertDatabaseTest(resource: ProjectDatabaseResource, record: Omit<DatabaseTestRecord, 'createdAt'>): Promise<DatabaseTestRecord> {
+    validate(resource);
+    return this.transaction(resource, true, true, async client => {
+      const result = await client.query<DatabaseTestRecord>(`INSERT INTO app.database_test_submissions (id, full_name, email, phone, city, test_message)
+        VALUES ($1,$2,$3,$4,$5,$6) RETURNING id, full_name AS "fullName", email, phone, city, test_message AS "testMessage", created_at AS "createdAt"`, [record.id, record.fullName, record.email, record.phone, record.city, record.testMessage]);
+      if (!result.rows[0]) throw new Error('Database insert returned no record.');
+      return result.rows[0];
+    });
+  }
+
+  async listDatabaseTests(resource: ProjectDatabaseResource): Promise<DatabaseTestRecord[]> {
+    validate(resource);
+    return this.transaction(resource, true, false, async client => {
+      const result = await client.query<DatabaseTestRecord>(`SELECT id, full_name AS "fullName", email, phone, city, test_message AS "testMessage", created_at AS "createdAt"
+        FROM app.database_test_submissions ORDER BY created_at DESC LIMIT 100`);
+      return result.rows;
     });
   }
 
