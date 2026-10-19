@@ -104,6 +104,21 @@ describe('AppWeave API', () => {
     expect(preview.body).toContain('source artifact');
   });
 
+  it('serves the generated project form from preview before an explicit build', async () => {
+    const auth = { authorization: `Bearer ${await register('preview-template@example.com')}` };
+    const project = await app.inject({ method: 'POST', url: '/api/v1/projects', headers: auth, payload: { name: 'Inventory Form' } });
+    const id = project.json().id;
+    await app.inject({ method: 'POST', url: `/api/v1/projects/${id}/specifications/versions`, headers: auth, payload: { schema: { entities: { Product: { fields: { sku: 'string', price: 'number' } } } } } });
+    const preview = await app.inject({ method: 'GET', url: `/preview/${id}`, headers: auth });
+    expect(preview.statusCode).toBe(200);
+    expect(preview.body).toContain('Generated from validated specification.');
+    expect(preview.body).toContain('Product');
+    expect(preview.body).not.toContain('has not written an');
+    const styles = await app.inject({ method: 'GET', url: `/preview/${id}/src/styles.css`, headers: auth });
+    expect(styles.statusCode).toBe(200);
+    expect(styles.headers['content-type']).toContain('text/css');
+  });
+
   it('persists bounded build failure state without activating a preview', async () => {
     const auth = { authorization: `Bearer ${await register('failed-build@example.com')}` };
     const p = await app.inject({ method: 'POST', url: '/api/v1/projects', headers: auth, payload: { name: 'Failed Build' } });
@@ -117,6 +132,32 @@ describe('AppWeave API', () => {
     const builds = await app.inject({ method: 'GET', url: `/api/v1/projects/${id}/builds`, headers: auth });
     expect(builds.json().builds[0]).toMatchObject({ status: 'failed', runtime: 'unavailable' });
     expect(builds.json().builds[0].logs.at(-1)).toContain('invalid JSON');
+  });
+
+  it('generates a React/Vite template and reports the isolated worker boundary', async () => {
+    const auth = { authorization: `Bearer ${await register('generated-template@example.com')}` };
+    const p = await app.inject({ method: 'POST', url: '/api/v1/projects', headers: auth, payload: { name: 'Generated UI' } });
+    const id = p.json().id;
+    await app.inject({ method: 'POST', url: `/api/v1/projects/${id}/specifications/versions`, headers: auth, payload: { schema: { entities: { Order: { fields: { total: 'number' } } } } } });
+    const built = await app.inject({ method: 'POST', url: `/api/v1/projects/${id}/builds`, headers: auth, payload: { version: 1 } });
+    expect(built.statusCode).toBe(200);
+    const files = await Promise.all(['package.json', 'package-lock.json', 'src/main.jsx'].map(async file => { await access(join(dir, 'projects', id, file)); return file; }));
+    expect(files).toHaveLength(3);
+    expect(built.json().buildLog).toEqual(expect.arrayContaining([expect.stringContaining('generated React/Vite source template'), expect.stringContaining('worker unavailable')]));
+    const runtime = await app.inject({ method: 'GET', url: `/api/v1/projects/${id}/runtime/status`, headers: auth });
+    expect(runtime.statusCode).toBe(200);
+    expect(runtime.json()).toMatchObject({ available: false, runtime: 'unavailable', limits: { timeoutMs: 30000, memoryMb: 512 } });
+  });
+
+  it('cleans owned project source and artifacts on deletion', async () => {
+    const auth = { authorization: `Bearer ${await register('cleanup@example.com')}` };
+    const p = await app.inject({ method: 'POST', url: '/api/v1/projects', headers: auth, payload: { name: 'Cleanup' } });
+    const id = p.json().id;
+    await mkdir(join(dir, 'projects', id), { recursive: true });
+    await writeFile(join(dir, 'projects', id, 'index.html'), '<h1>temporary</h1>', 'utf8');
+    expect((await app.inject({ method: 'DELETE', url: `/api/v1/projects/${id}`, headers: auth })).statusCode).toBe(200);
+    await expect(access(join(dir, 'projects', id))).rejects.toThrow();
+    expect((await app.inject({ method: 'GET', url: `/api/v1/projects/${id}`, headers: auth })).statusCode).toBe(404);
   });
 
   it('manages owned project settings and validates updates', async () => {

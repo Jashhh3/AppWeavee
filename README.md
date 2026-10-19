@@ -114,7 +114,7 @@ docker compose up --build
 
 The API is at `http://localhost:3000`; the dashboard is at `http://localhost:8080`. Set strong `JWT_SECRET` and `AI_ENCRYPTION_KEY` values in `.env` for shared environments. The compose setup allows the dashboard origins on port 8080. Stop the stack with `docker compose down`.
 
-The API JSON store is mounted in the named `appweave-data` volume. Remove local data with `docker compose down -v`.
+Docker Compose starts PostgreSQL 16 alongside the API. `DATABASE_URL` is supplied to the API and the migration in `backend/migrations/001_initial.sql` runs automatically. Core account, token, project, provider, survey, audit, build, deployment, and version records are mirrored into PostgreSQL; the JSON state document preserves compatibility with the existing store. The JSON store and generated secrets are mounted in `appweave-data`, while PostgreSQL uses `postgres-data`. Remove all local data with `docker compose down -v`.
 
 ## Deploy
 

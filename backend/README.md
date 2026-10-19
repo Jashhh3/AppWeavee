@@ -1,6 +1,6 @@
 # AppWeave backend
 
-Offline-first TypeScript API foundation for AppWeave. It uses Fastify and a JSON file store (safe for local development and tests; use a durable database adapter for multi-instance production).
+Offline-first TypeScript API foundation for AppWeave. It uses Fastify, PostgreSQL when `DATABASE_URL` is set, and the JSON file store for offline development and tests.
 
 ## Setup and operation
 
@@ -15,15 +15,39 @@ npm start
 
 Run the complete offline check with `npm test` (or `npm run typecheck`). Docker builds and runs the same service with `docker build -f backend/Dockerfile -t appweave-backend . && docker run --rm -p 3000:3000 appweave-backend`.
 
+### PostgreSQL persistence
+
+The Compose stack starts PostgreSQL 16 and configures the API with `DATABASE_URL`. On first API startup, `backend/migrations/001_initial.sql` is applied automatically. The adapter stores the complete application state in a migration-safe JSONB document and mirrors users, tokens, projects/settings, provider configs, survey responses, audits, builds, deployments, and versions into queryable tables. Existing JSON storage remains the default when `DATABASE_URL` is unset.
+
+```sh
+cp backend/.env.example backend/.env # optional local overrides; never commit secrets
+docker compose up --build
+# API: http://localhost:3000/health, dashboard: http://localhost:8080
+docker compose down                 # retain PostgreSQL volume
+docker compose down -v              # remove local database and app data
+```
+
+For a non-Docker PostgreSQL server, set `DATABASE_URL` (and optionally `DATABASE_POOL_SIZE`) in `backend/.env`, then run `npm ci`, `npm run build`, and `npm start` from `backend/`. The database user must be allowed to create tables in the selected database. Do not place passwords or API keys in source files; use environment variables or an untracked `.env` file.
+
 ## API
 
 `GET /health` is unauthenticated. SDK routes are under `/api/v1`: register/login, owned project listing and creation, project-scoped Product CRUD, specification versions, preview/production deployment metadata, Git-backed project versions (snapshots), changed-file comparison, validated rollback, audit logs, and authenticated AI generation through configured Gemini, OpenAI, OpenRouter, or Groq providers. Provider keys are encrypted at rest with AES-256-GCM and are never returned or logged. Set `AI_ENCRYPTION_KEY` before starting the server (tests use an explicit test key). Register/login also sets an HttpOnly `appweave_session` cookie (SameSite=Lax); configure `SESSION_COOKIE_SECURE` and `SESSION_COOKIE_MAX_AGE` for deployment. `GET /api/v1/auth/me` reads either the cookie or `Authorization: Bearer <token>`, and `POST /api/v1/auth/logout` clears the cookie. Browser clients should send credentials and an allowed `Origin`; state-changing requests with a disallowed Origin are rejected. User preferences are available at `GET/PATCH /api/v1/me/preferences` and are isolated by authenticated user. Send `Authorization: Bearer <token>` for SDK compatibility. All errors use `{error:{code,message,requestId}}`; rate limiting and configurable CORS origin checks are enabled.
 
-`POST /api/v1/projects/:projectId/builds` and the existing deployment/publish routes run a bounded artifact builder. `GET /api/v1/projects/:projectId/builds` exposes persisted status, logs, runtime mode, and artifact names.
+`POST /api/v1/projects/:projectId/builds` and the existing deployment/publish routes run a bounded artifact builder. `GET /api/v1/projects/:projectId/builds` and `GET /api/v1/projects/:projectId/builds/:buildId` expose persisted status, logs, runtime mode, and artifact names. `GET /api/v1/projects/:projectId/runtime/status` reports whether an isolated Docker worker is available. `DELETE /api/v1/projects/:projectId` removes owned source, artifacts, and project records.
+
+### Survey response storage
+
+Authenticated project owners can submit and read responses with `POST`/`GET /api/v1/projects/:projectId/survey-responses`. The API requires `consent: true`, limits payloads to 64 KiB and 100 answer fields, persists responses in the configured store, and never places answer values in audit metadata. Public generated forms can use `POST /api/survey-responses` with the project's `publicClientId` (or `projectId`) plus `surveyId`, `answers`, and `consent: true`; that route is rate-limited and returns only response metadata. Configure `ALLOWED_ORIGINS` and use a durable database adapter before exposing public collection beyond local development.
 
 ### Project build/runtime limitation
 
-Builds use a deterministic server-owned **artifact-only** path: bounded source is read from the project workspace, `package.json` is validated when present, a static `index.html` is copied (or a minimal HTML shell is generated), and the artifact is served through authenticated preview. The API never runs `npm`, dependency lifecycle scripts, TypeScript, JSX, or project JavaScript, so arbitrary React applications are not claimed. Malformed manifests, oversized projects, and too many files persist a `failed` build with no active deployment. Full React compilation/runtime requires a future isolated worker/sandbox.
+Builds use a deterministic server-owned **artifact-only** path: bounded source is read from the project workspace, `package.json` is validated when present, and a validated specification with no source generates a pinned React/Vite template plus lockfile. A static `index.html` is copied (or a minimal HTML shell is generated), and the artifact is served through authenticated preview with SPA fallback. The API never runs `npm`, dependency lifecycle scripts, TypeScript, JSX, or project JavaScript. Full React compilation is represented by an opt-in worker contract with strict timeout, memory, and output limits; when Docker worker provisioning is absent the status is explicitly `unavailable` and the safe artifact path remains active. Malformed manifests, oversized projects, and too many files persist a `failed` build with no active deployment.
+
+## MCP Apps preview UI
+
+The existing `POST /mcp` endpoint also advertises `render_project_preview`, backed by `ui://appweave/project-preview.html`. Clients can fetch it with `resources/read`; the resource uses `text/html;profile=mcp-app` and includes restrictive CSP/frame metadata. The tool returns project status and a preview link with the same ownership check as the other project tools.
+
+The embedded UI is deliberately a graceful fallback: it does not claim that an iframe can reach `localhost` through Secure MCP Tunnel. When the MCP host cannot reach the preview URL, it shows an explicit explanation and an ordinary link to open separately. No provider keys, MCP tokens, or other secrets are included in tool output or UI resource content.
 
 ## Local MCP connector
 

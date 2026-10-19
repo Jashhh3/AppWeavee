@@ -1,5 +1,5 @@
 export type SurveyAnswers = Record<string, unknown>;
-export type SurveyResponsePayload = { surveyId?: string; answers: SurveyAnswers; consent: true };
+export type SurveyResponsePayload = { surveyId?: string; answers: SurveyAnswers; consent: true; publicClientId?: string };
 export type SurveyResponse = SurveyResponsePayload & { id: string; projectId: string; createdAt: string };
 export type SurveyResponseClientConfig = { projectId: string; /** Absolute URL or template containing {projectId}. */ endpoint?: string; fetch?: typeof globalThis.fetch };
 export class SurveyResponseError extends Error {
