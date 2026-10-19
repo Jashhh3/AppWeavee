@@ -41,6 +41,16 @@ docker compose down
 
 `docker compose down -v` deletes the volume, users, projects, provider configuration, and generated data. Use it only for a deliberate clean reset.
 
+### Optional isolated React/Vite worker
+
+By default builds use the bounded artifact-only fallback and never execute project code in Fastify. To run generated React/Vite builds in short-lived, isolated containers locally, build the API image (it includes the Docker CLI) and opt in with the worker Compose overlay:
+
+```sh
+APPWEAVE_DOCKER_WORKER=true docker compose -f docker-compose.yml -f docker-compose.worker.yml up --build
+```
+
+The overlay grants the API access to the local Docker socket so it can launch a worker with only the `appweave-projects` volume mounted. The worker runs `npm install --ignore-scripts` and `npm run build` with a 30-second timeout, 512 MiB memory limit, bounded logs, dropped capabilities, `no-new-privileges`, read-only container filesystem, and a temporary filesystem. Static projects and unavailable workers continue through artifact-only fallback; a failed isolated build is reported as failed with its worker logs. Do not enable this overlay on a shared host unless Docker socket access is part of the host's trust boundary.
+
 For non-Docker development, the optional `scripts/bootstrap-env.ps1` and `scripts/bootstrap-env.sh` helpers still create a local `.env`.
 
 ## Setup

@@ -237,7 +237,7 @@ export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; wo
       throw bad(`Build failed: ${result.error}`, 422, 'BUILD_FAILED');
     }
     const d: Deployment = { id: store.id(), projectId: p.id, environment, version, status: 'active', url, buildId, buildLog: result.logs, createdAt, createdBy: uid };
-    await store.commit(db => { db.builds[db.builds.findIndex(x => x.id === buildId)] = record; db.deployments.filter(x => x.projectId === p.id && x.environment === environment && x.status === 'active').forEach(x => x.status = 'rolled_back'); db.deployments.push(d); db.buildHistory.push({ id: store.id(), projectId: p.id, specVersion: version, stages: [{ name: 'validate_specification', status: 'completed' }, { name: 'artifact_build', status: 'completed', detail: 'artifact_only' }], createdAt: now(), createdBy: uid }); });
+     await store.commit(db => { db.builds[db.builds.findIndex(x => x.id === buildId)] = record; db.deployments.filter(x => x.projectId === p.id && x.environment === environment && x.status === 'active').forEach(x => x.status = 'rolled_back'); db.deployments.push(d); db.buildHistory.push({ id: store.id(), projectId: p.id, specVersion: version, stages: [{ name: 'validate_specification', status: 'completed' }, { name: 'artifact_build', status: 'completed', detail: result.runtime }], createdAt: now(), createdBy: uid }); });
     await audit(`deployment.${environment}`, p.id, uid, requestId, { version, buildId }); return returnDetails ? { deployment: d, build: record } : d;
   };
   app.post('/api/v1/projects/:projectId/deployments', async request => { const p = project(request); const uid = auth(request); const b = z.object({ environment: z.enum(['preview','production']), version: z.number().int().positive() }).parse(request.body); return buildProject(p, uid, b.environment, b.version, request.id); });
@@ -301,7 +301,11 @@ export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; wo
   registerOAuthRoutes(app, store, secret, cookieName);
   const requestedMcpLocalTestMode = opts.mcpLocalTestMode ?? process.env.APPWEAVE_MCP_LOCAL_TEST_MODE === 'true';
   const mcpLocalTestMode = requestedMcpLocalTestMode && (process.env.NODE_ENV === 'development' || process.env.NODE_ENV === 'test');
-  registerMcpRoutes({ app, store, workspaceRoot, secret, cookieName, repoFor, audit, mcpUserId: mcpUser, allowUnauthenticated: mcpLocalTestMode });
+  registerMcpRoutes({ app, store, workspaceRoot, secret, cookieName, repoFor, audit, mcpUserId: mcpUser, rebuildPreview: async projectId => {
+    const p = store.data.projects.find(item => item.id === projectId);
+    const active = [...store.data.deployments].reverse().find(item => item.projectId === projectId && item.environment === 'preview' && item.status === 'active');
+    if (p && active) await buildProject(p, active.createdBy, 'preview', active.version, `mcp-${store.id()}`);
+  }, allowUnauthenticated: mcpLocalTestMode });
   return app;
 }
 if (process.env.NODE_ENV !== 'test') buildApp().then(app => app.listen({ port: Number(process.env.PORT ?? 3000), host: '0.0.0.0' })).catch(err => { console.error(err); process.exit(1); });

@@ -5,7 +5,7 @@ import type { ApplicationSchema } from './types.js';
 import { generateReactViteTemplate } from './project-template.js';
 import { runSandboxedViteBuild } from './sandbox-worker.js';
 
-export type ArtifactBuild = { status: 'ready'|'failed'; runtime: 'artifact_only'|'unavailable'; logs: string[]; artifacts: string[]; error?: string };
+export type ArtifactBuild = { status: 'ready'|'failed'; runtime: 'artifact_only'|'docker_worker'|'unavailable'; logs: string[]; artifacts: string[]; error?: string };
 const MAX_FILES = 500;
 const MAX_BYTES = 5 * 1024 * 1024;
 const ignored = new Set(['.git', 'node_modules', 'dist', 'build']);
@@ -64,29 +64,33 @@ export async function buildProjectArtifacts(project: Project, workspaceRoot: str
     }
     await rm(out, { recursive: true, force: true });
     await mkdir(out, { recursive: true });
-    const worker = await runSandboxedViteBuild(root, out);
+    const worker = packageFile ? await runSandboxedViteBuild(root, out) : { status: 'unavailable' as const, runtime: 'unavailable' as const, logs: ['static project; Docker worker is not required'] };
     logs.push(...worker.logs);
-    if (sourceFiles.some(path => path.startsWith('public/'))) await cp(join(root, 'public'), out, { recursive: true });
-    for (const asset of sourceFiles.filter(path => path.startsWith('src/') && /\.(css|svg|png|jpe?g|gif|webp|woff2?)$/i.test(path))) {
-      const target = join(out, asset.slice('src/'.length));
-      await mkdir(join(target, '..'), { recursive: true });
-      await cp(join(root, asset), target);
-    }
-    // Preserve non-code source assets when the optional Vite worker is unavailable.
-    for (const path of sourceFiles.filter(path => path.startsWith('src/') && !path.endsWith('.jsx') && !path.endsWith('.tsx'))) {
-      const parent = path.slice(0, path.lastIndexOf('/'));
-      await mkdir(join(out, parent), { recursive: true });
-      await cp(join(root, path), join(out, path));
-    }
-    const html = sourceFiles.find(path => path === 'index.html' || path === 'public/index.html');
-    if (html) await cp(join(root, html), join(out, 'index.html'));
-    else {
-      const sourceLabel = sourceFiles.length ? `Source files: ${sourceFiles.slice(0, 12).join(', ')}` : 'No source was present; generated minimal React-compatible shell.';
-      await writeFile(join(out, 'index.html'), `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${project.name} · AppWeave</title></head><body><div id="root"><h1>${project.name}</h1><p>${sourceLabel}</p><p>Build ${buildId.slice(0, 8)} · artifact-only preview</p></div></body></html>`, 'utf8');
-      logs.push(sourceFiles.length ? 'no static entrypoint found; generated bounded preview shell' : 'generated minimal preview shell');
+    if (worker.status === 'failed') return { status: 'failed', runtime: 'docker_worker', logs: [...logs, 'isolated Vite build failed'], artifacts: [], error: worker.error };
+    const isolatedBuild = worker.status === 'ready';
+    if (!isolatedBuild) {
+      if (sourceFiles.some(path => path.startsWith('public/'))) await cp(join(root, 'public'), out, { recursive: true });
+      for (const asset of sourceFiles.filter(path => path.startsWith('src/') && /\.(css|svg|png|jpe?g|gif|webp|woff2?)$/i.test(path))) {
+        const target = join(out, asset.slice('src/'.length));
+        await mkdir(join(target, '..'), { recursive: true });
+        await cp(join(root, asset), target);
+      }
+      // Preserve non-code source assets when the optional Vite worker is unavailable.
+      for (const path of sourceFiles.filter(path => path.startsWith('src/') && !path.endsWith('.jsx') && !path.endsWith('.tsx'))) {
+        const parent = path.slice(0, path.lastIndexOf('/'));
+        await mkdir(join(out, parent), { recursive: true });
+        await cp(join(root, path), join(out, path));
+      }
+      const html = sourceFiles.find(path => path === 'index.html' || path === 'public/index.html');
+      if (html) await cp(join(root, html), join(out, 'index.html'));
+      else {
+        const sourceLabel = sourceFiles.length ? `Source files: ${sourceFiles.slice(0, 12).join(', ')}` : 'No source was present; generated minimal React-compatible shell.';
+        await writeFile(join(out, 'index.html'), `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>${project.name} · AppWeave</title></head><body><div id="root"><h1>${project.name}</h1><p>${sourceLabel}</p><p>Build ${buildId.slice(0, 8)} · artifact-only preview</p></div></body></html>`, 'utf8');
+        logs.push(sourceFiles.length ? 'no static entrypoint found; generated bounded preview shell' : 'generated minimal preview shell');
+      }
     }
     logs.push(`validated ${sourceFiles.length} source file(s)`, 'artifact written: dist/index.html');
-    return { status: 'ready', runtime: 'artifact_only', logs, artifacts: ['dist/index.html'] };
+    return { status: 'ready', runtime: isolatedBuild ? 'docker_worker' : 'artifact_only', logs, artifacts: ['dist/index.html'] };
   } catch (error) {
     const message = error instanceof SyntaxError ? 'package.json is invalid JSON' : error instanceof Error ? error.message : 'build failed';
     return { status: 'failed', runtime: 'unavailable', logs: [...logs, `build failed: ${message}`], artifacts: [], error: message };

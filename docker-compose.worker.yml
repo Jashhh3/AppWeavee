@@ -1,0 +1,7 @@
+services:
+  api:
+    environment:
+      APPWEAVE_DOCKER_WORKER: "true"
+    volumes:
+      # The API launches short-lived workers through this local Docker socket.
+      - /var/run/docker.sock:/var/run/docker.sock
