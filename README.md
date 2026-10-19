@@ -64,6 +64,7 @@ From the repository root:
 ```sh
 cp backend/.env.example backend/.env
 cp frontend/.env.example frontend/.env.local
+(cd . && npm ci)
 (cd backend && npm ci)
 (cd frontend && npm ci)
 (cd sdk && npm ci)
@@ -111,6 +112,8 @@ make test
 ```
 
 This uses each committed npm lockfile with `npm ci --offline`, runs backend tests and typechecking, the frontend smoke test, and the SDK build. Install dependencies once with network access during setup before running offline checks.
+
+The root `Dockerfile` builds and serves the dashboard-only image. The reproducible full-stack Docker path is `docker compose`, which builds the pinned backend and frontend images and starts PostgreSQL with persistent named volumes. Docker builds require network access to pull the base images and npm packages on a clean machine; after the images and npm caches are present, `make test` is offline.
 
 Build all workspaces with:
 
