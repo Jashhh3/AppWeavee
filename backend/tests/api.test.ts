@@ -215,8 +215,14 @@ describe('AppWeave API', () => {
     const p = await app.inject({ method: 'POST', url: '/api/v1/projects', headers: auth, payload: { name: 'Generate' } }); const id = p.json().id;
     await app.inject({ method: 'PATCH', url: `/api/v1/projects/${id}/providers/gemini`, headers: auth, payload: { baseUrl: 'https://generativelanguage.googleapis.com', model: 'gemini-test', key: 'gemini-secret' } });
     const response = await app.inject({ method: 'POST', url: '/api/v1/ai/generate', headers: auth, payload: { projectId: id, prompt: 'Create a catalog' } });
-    expect(response.statusCode).toBe(200); expect(response.json()).toMatchObject({ provider: 'gemini', configured: true, applicationSpec: { schema: { roles: ['admin'] } } });
-    expect(JSON.stringify(response.json())).not.toContain('gemini-secret');
+     expect(response.statusCode).toBe(200); expect(response.json()).toMatchObject({ provider: 'gemini', configured: true, applicationSpec: { schema: { roles: ['admin'] } }, build: { status: 'ready', runtime: 'artifact_only', logs: expect.arrayContaining([expect.stringContaining('worker unavailable')]) }, previewStatus: 'ready' });
+     expect(JSON.stringify(response.json())).not.toContain('gemini-secret');
+     for (const file of ['package.json', 'package-lock.json', 'index.html', 'src/main.jsx', 'src/styles.css']) await access(join(dir, 'projects', id, file));
+     const builds = await app.inject({ method: 'GET', url: `/api/v1/projects/${id}/builds`, headers: auth });
+     expect(builds.json().builds[0]).toMatchObject({ status: 'ready', runtime: 'artifact_only', artifacts: ['dist/index.html'] });
+     expect(builds.json().deployments[0]).toMatchObject({ environment: 'preview', status: 'active' });
+     const preview = await app.inject({ method: 'GET', url: `/preview/${id}`, headers: auth });
+     expect(preview.statusCode).toBe(200); expect(preview.body).toContain('Generated from validated specification.'); expect(preview.body).toContain('Generate');
   });
 
   it('does not allow generation for another owner or invalid provider output', async () => {

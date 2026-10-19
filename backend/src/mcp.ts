@@ -4,6 +4,7 @@ import type { FastifyInstance } from 'fastify';
 import type { Store } from './store.js';
 import { ownedProject, userId } from './auth.js';
 import { ProjectVersionRepo } from './versions.js';
+import { syncPreviewEntryPoint } from './project-runtime.js';
 type Rpc={jsonrpc?:string;id?:string|number|null;method?:string;params?:Record<string,unknown>};
 type Options={app:FastifyInstance;store:Store;workspaceRoot:string;secret:string;cookieName:string;repoFor:(id:string)=>ProjectVersionRepo;audit:(action:string,projectId:string|undefined,uid:string,requestId:string,metadata?:unknown)=>Promise<unknown>;mcpUserId:(r:any)=>string;allowUnauthenticated?:boolean};
 const publicBaseUrl=()=> (process.env.PUBLIC_BASE_URL ?? 'http://localhost:3000').replace(/\/$/, '');
@@ -20,6 +21,14 @@ async function walk(dir:string,prefix=''):Promise<string[]>{const out:string[]=[
 function applyTextPatch(current:string, input:string):string {
   const normalized=input.replaceAll('\r\n','\n');
   if (!normalized.includes('*** Begin Patch')) return input;
+  const addFile = normalized.match(/\*\*\* Add File:[^\n]*\n([\s\S]*?)(?:\n\*\*\* End Patch|$)/);
+  if (addFile && !normalized.includes('*** Update File:')) {
+    const added = addFile[1].split('\n').filter(line => line.startsWith('+')).map(line => line.slice(1)).join('\n');
+    if (added.includes('*** Begin Patch') || added.includes('*** End Patch')) {
+      throw Object.assign(new Error('Patch envelope could not be applied'), { code: -32602 });
+    }
+    return added;
+  }
   const section=normalized.split('\n').filter(line=>!line.startsWith('*** Begin Patch')&&!line.startsWith('*** End Patch')&&!line.startsWith('*** Update File:')&&!line.startsWith('*** Add File:')&&!line.startsWith('*** Delete File:')).filter(line=>!line.startsWith('@@'));
   const source=current.split('\n'); const output:string[]=[]; let cursor=0;
   for (const line of section) {
@@ -29,14 +38,31 @@ function applyTextPatch(current:string, input:string):string {
     else if (line) output.push(line);
   }
   output.push(...source.slice(cursor));
-  return output.join('\n');
+  const result = output.join('\n');
+  if (result.includes('*** Begin Patch') || result.includes('*** End Patch')) {
+    throw Object.assign(new Error('Patch envelope could not be applied'), { code: -32602 });
+  }
+  return result;
 }
 async function writeFile(path:string, data:string, encoding:'utf8'='utf8'):Promise<void> {
+  const syncSource = async () => {
+    if (path.endsWith('/index.html') || path.endsWith('\\index.html')) {
+      const parent = dirname(path);
+      if (!parent.endsWith('/dist') && !parent.endsWith('\\dist')) {
+        const root = parent.endsWith('/public') || parent.endsWith('\\public') ? dirname(parent) : parent;
+        const changed = root === parent ? 'index.html' : 'public/index.html';
+        await syncPreviewEntryPoint(root, changed);
+      }
+    }
+  };
   if (data.includes('*** Begin Patch')) {
     const current=await readFile(path,'utf8').catch(()=> '');
-    return fsWriteFile(path, applyTextPatch(current,data), encoding);
+    await fsWriteFile(path, applyTextPatch(current,data), encoding);
+    await syncSource();
+    return;
   }
-  return fsWriteFile(path,data,encoding);
+  await fsWriteFile(path,data,encoding);
+  await syncSource();
 }
 export async function dispatchMcp(request: unknown, context: { userId: string }, health: (context: { userId: string }) => unknown | Promise<unknown>): Promise<Record<string, unknown> | undefined> {
  const value=request as any; if (!value || value.jsonrpc !== '2.0' || typeof value.method !== 'string') return {jsonrpc:'2.0',id:value?.id??null,error:{code:-32600,message:'Invalid Request'}}; const id=value.id??null; if (value.method==='notifications/initialized'||value.method==='notifications/cancelled') return undefined; if(value.method==='ping') return {jsonrpc:'2.0',id,result:{}}; if(value.method==='initialize') return {jsonrpc:'2.0',id,result:{protocolVersion:'2024-11-05',capabilities:{tools:{}},serverInfo:{name:'appweave',version:'1.0.0'}}}; if(value.method==='tools/list') return {jsonrpc:'2.0',id,result:{tools:[{name:'appweave_health',description:'Return health status.',inputSchema:{type:'object'}}]}}; if(value.method==='tools/call'){if(value.params?.name!=='appweave_health')return {jsonrpc:'2.0',id,error:{code:-32602,message:'Unknown tool'}};const result=await health(context);return {jsonrpc:'2.0',id,result:{content:[{type:'text',text:JSON.stringify(result)}],structuredContent:result,isError:false}};} return {jsonrpc:'2.0',id,error:{code:-32601,message:'Method not found'}};

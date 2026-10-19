@@ -10,6 +10,27 @@ const MAX_FILES = 500;
 const MAX_BYTES = 5 * 1024 * 1024;
 const ignored = new Set(['.git', 'node_modules', 'dist', 'build']);
 
+/** Synchronize an already-built preview entrypoint with its source workspace. */
+export async function syncPreviewEntryPoint(root: string, changedPath: string): Promise<void> {
+  const normalized = changedPath.replaceAll('\\', '/');
+  if (normalized !== 'index.html' && normalized !== 'public/index.html') return;
+  const sourceHtml = await readFile(join(root, normalized), 'utf8');
+  async function visit(directory: string): Promise<void> {
+    const entries = await readdir(directory, { withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isSymbolicLink() || entry.name === 'node_modules' || entry.name === '.git') continue;
+      const absolute = join(directory, entry.name);
+      if (!entry.isDirectory()) continue;
+      if (entry.name === 'dist') {
+        const artifact = join(absolute, 'index.html');
+        try { await stat(artifact); await writeFile(artifact, sourceHtml, 'utf8'); }
+        catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+      } else await visit(absolute);
+    }
+  }
+  await visit(root);
+}
+
 async function files(root: string, current = root): Promise<string[]> {
   const entries = await readdir(current, { withFileTypes: true });
   const result: string[] = [];
