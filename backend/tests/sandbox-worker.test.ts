@@ -54,6 +54,24 @@ describe('sandbox worker', () => {
     expect(command).toContain("cp -a dist/. '/workspace/preview/version-1/staged'/");
   });
 
+  it('classifies a Docker volume subpath failure as unavailable project storage', async () => {
+    vi.stubEnv('APPWEAVE_DOCKER_WORKER', 'true');
+    vi.stubEnv('PROJECT_WORKSPACE_ROOT', '/tmp/projects');
+    vi.stubEnv('APPWEAVE_DOCKER_WORKER_VOLUME', 'existing_appweave-projects');
+    const child = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter(), kill: vi.fn() });
+    vi.mocked(spawn).mockImplementation((_command, args) => {
+      queueMicrotask(() => {
+        if ((args as string[])[0] === 'version') child.stdout.emit('data', Buffer.from('1.45 1.45'));
+        if ((args as string[])[0] === 'run') child.stderr.emit('data', Buffer.from('cannot access path /var/lib/docker/volumes/appweave_appweave-projects/_data/project: no such file or directory'));
+        child.emit('close', (args as string[])[0] === 'version' || (args as string[])[0] === 'volume' ? 0 : 127);
+      });
+      return child as unknown as ReturnType<typeof spawn>;
+    });
+    const result = await runSandboxedViteBuild('/tmp/projects/project', '/tmp/projects/project/preview/staged');
+    expect(result).toMatchObject({ status: 'failed', error: 'PROJECT_STORAGE_UNAVAILABLE' });
+    expect(result.logs.join('\n')).toContain('cannot access path');
+  });
+
   function mockNamedVolume(inspectionExit = 0, runExit = 0, versions = '1.45 1.45') {
     vi.stubEnv('APPWEAVE_DOCKER_WORKER', 'true');
     vi.stubEnv('PROJECT_WORKSPACE_ROOT', '/data/projects');

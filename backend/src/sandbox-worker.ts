@@ -102,8 +102,11 @@ export async function runSandboxedViteBuild(root: string, out: string, limits = 
       clearTimeout(timer);
       const logs = ['docker worker started', ...(output.text ? output.text.trimEnd().split(/\r?\n/) : []), ...(output.truncated ? ['worker output truncated at configured limit'] : []), limitsLog];
       if (timedOut) resolveResult({ status: 'failed', runtime: 'docker_worker', logs, error: 'SANDBOX_TIMEOUT' });
-      else if (code === 0) resolveResult({ status: 'ready', runtime: 'docker_worker', logs });
-      else resolveResult({ status: 'failed', runtime: 'docker_worker', logs, error: `SANDBOX_EXIT_${code ?? 'UNKNOWN'}` });
+       else if (code === 0) resolveResult({ status: 'ready', runtime: 'docker_worker', logs });
+       else {
+         const storageFailure = /cannot access path|no such file or directory|volume-subpath/i.test(output.text);
+         resolveResult({ status: 'failed', runtime: 'docker_worker', logs, error: storageFailure ? 'PROJECT_STORAGE_UNAVAILABLE' : `SANDBOX_EXIT_${code ?? 'UNKNOWN'}` });
+       }
     });
   });
 }
