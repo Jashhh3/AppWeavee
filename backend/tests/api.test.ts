@@ -170,6 +170,31 @@ describe('AppWeave API', () => {
     expect((await app.inject({ method: 'GET', url: '/api/v1/me/preferences', headers: auth })).json().preferences.selectedProjectId).toBeNull();
   });
 
+  it('does not allow unauthenticated or non-owner project deletion', async () => {
+    const owner = { authorization: `Bearer ${await register('delete-owner@example.com')}` };
+    const other = { authorization: `Bearer ${await register('delete-other@example.com')}` };
+    const created = await app.inject({ method: 'POST', url: '/api/v1/projects', headers: owner, payload: { name: 'Protected deletion' } });
+    const id = created.json().id;
+    expect((await app.inject({ method: 'DELETE', url: `/api/v1/projects/${id}` })).statusCode).toBe(401);
+    expect((await app.inject({ method: 'DELETE', url: `/api/v1/projects/${id}`, headers: other })).statusCode).toBe(404);
+    expect((await app.inject({ method: 'GET', url: `/api/v1/projects/${id}`, headers: owner })).statusCode).toBe(200);
+  });
+
+  it('removes project-owned records before deleting the project', async () => {
+    const auth = { authorization: `Bearer ${await register('delete-records@example.com')}` };
+    const created = await app.inject({ method: 'POST', url: '/api/v1/projects', headers: auth, payload: { name: 'Delete records' } });
+    const id = created.json().id;
+    await app.inject({ method: 'POST', url: `/api/v1/projects/${id}/products`, headers: auth, payload: { name: 'Temporary', sku: 'TMP', price: 1 } });
+    await app.inject({ method: 'POST', url: `/api/v1/projects/${id}/specifications/versions`, headers: auth, payload: { schema: { Product: { fields: { name: 'string' } } } } });
+    await app.inject({ method: 'POST', url: `/api/v1/projects/${id}/versions`, headers: auth, payload: { reason: 'temporary version' } });
+    await app.inject({ method: 'PATCH', url: `/api/v1/projects/${id}/providers/openai`, headers: auth, payload: { baseUrl: 'https://api.openai.com/v1', model: 'gpt-4o-mini', key: 'test-provider-key' } });
+    await app.inject({ method: 'PATCH', url: '/api/v1/me/preferences', headers: auth, payload: { selectedProjectId: id } });
+    expect((await app.inject({ method: 'DELETE', url: `/api/v1/projects/${id}`, headers: auth })).statusCode).toBe(200);
+    expect((await app.inject({ method: 'GET', url: '/api/v1/projects', headers: auth })).json().projects).toHaveLength(0);
+    expect((await app.inject({ method: 'GET', url: '/api/v1/me/preferences', headers: auth })).json().preferences.selectedProjectId).toBeNull();
+    await expect(access(join(dir, 'projects', id))).rejects.toThrow();
+  });
+
   it('manages owned project settings and validates updates', async () => {
     const owner = { authorization: `Bearer ${await register('settings-owner@example.com')}` };
     const other = { authorization: `Bearer ${await register('settings-other@example.com')}` };
