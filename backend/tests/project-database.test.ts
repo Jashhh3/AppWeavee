@@ -243,4 +243,26 @@ describe('ProjectDatabaseManager', () => {
     await expect(manager.read(resourceFor('A'))).rejects.toThrow('transaction failed');
     await expect(manager.provision('A')).rejects.toThrow('closed');
   });
+
+  it('deprovisions the cached project pool, database, and role safely', async () => {
+    const manager = new ProjectDatabaseManager(url);
+    const resource = resourceFor('delete-me');
+    await manager.read(resource);
+    const admin = mocks.pools[0];
+    const defaultQuery = admin.query.getMockImplementation();
+    admin.query.mockImplementation(async (sql: string, params?: unknown[]) => {
+      if (sql.includes('rolsuper AS allowed')) return { rows: [{ allowed: true }] };
+      return defaultQuery?.(sql, params) ?? { rows: [] };
+    });
+    await manager.deprovision(resource);
+    const project = mocks.pools[1];
+    expect(project.end).toHaveBeenCalledTimes(1);
+    expect(sqls(admin)).toEqual(expect.arrayContaining([
+      'SELECT rolsuper AS allowed FROM pg_roles WHERE rolname = current_user',
+      'DROP DATABASE IF EXISTS ' + `"${resource.database}"`,
+      'DROP ROLE IF EXISTS ' + `"${resource.role}"`,
+    ]));
+    expect(sqls(admin).some(sql => sql.includes('pg_terminate_backend'))).toBe(true);
+    await manager.close();
+  });
 });

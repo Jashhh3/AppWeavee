@@ -230,6 +230,37 @@ export class ProjectDatabaseManager {
     });
   }
 
+  async deprovision(resource: ProjectDatabaseResource): Promise<void> {
+    validate(resource);
+    if (this.closed) throw new Error('Project database manager is closed.');
+    const cached = this.pools.get(resource.database);
+    this.pools.delete(resource.database);
+    if (cached) await cached.end();
+
+    let client: PoolClient | undefined;
+    let locked = false;
+    let discard = false;
+    try {
+      client = await this.admin.connect();
+      const permission = await client.query<{ allowed: boolean }>(
+        'SELECT rolsuper AS allowed FROM pg_roles WHERE rolname = current_user');
+      if (!permission.rows[0]?.allowed) throw new Error('Project database deletion requires a PostgreSQL superuser.');
+      await client.query('SELECT pg_advisory_lock(hashtextextended($1, 0))', [resource.database]);
+      locked = true;
+      await client.query('SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = $1 AND pid <> pg_backend_pid()', [resource.database]);
+      await client.query(`DROP DATABASE IF EXISTS ${identifier(resource.database)}`);
+      await client.query(`DROP ROLE IF EXISTS ${identifier(resource.role)}`);
+    } catch (error) {
+      throw safeError('deprovisioning', error);
+    } finally {
+      if (client && locked) {
+        try { await client.query('SELECT pg_advisory_unlock(hashtextextended($1, 0))', [resource.database]); }
+        catch { discard = true; }
+      }
+      client?.release(discard);
+    }
+  }
+
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;

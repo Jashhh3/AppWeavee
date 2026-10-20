@@ -161,6 +161,15 @@ describe('AppWeave API', () => {
     expect((await app.inject({ method: 'GET', url: `/api/v1/projects/${id}`, headers: auth })).statusCode).toBe(404);
   });
 
+  it('clears the deleted project from user preferences', async () => {
+    const auth = { authorization: `Bearer ${await register('preference-cleanup@example.com')}` };
+    const p = await app.inject({ method: 'POST', url: '/api/v1/projects', headers: auth, payload: { name: 'Preference cleanup' } });
+    const id = p.json().id;
+    await app.inject({ method: 'PATCH', url: '/api/v1/me/preferences', headers: auth, payload: { selectedProjectId: id } });
+    expect((await app.inject({ method: 'DELETE', url: `/api/v1/projects/${id}`, headers: auth })).statusCode).toBe(200);
+    expect((await app.inject({ method: 'GET', url: '/api/v1/me/preferences', headers: auth })).json().preferences.selectedProjectId).toBeNull();
+  });
+
   it('manages owned project settings and validates updates', async () => {
     const owner = { authorization: `Bearer ${await register('settings-owner@example.com')}` };
     const other = { authorization: `Bearer ${await register('settings-other@example.com')}` };

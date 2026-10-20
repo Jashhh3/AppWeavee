@@ -176,7 +176,21 @@ export async function buildApp(opts: { dataFile?: string; jwtSecret?: string; wo
       const projectId = store.id(); await ensureProjectStorage(workspaceRoot, projectId); const database = projectDatabases ? await projectDatabases.provision(projectId) : undefined; const p: Project = { id: projectId, ownerId: uid, name: body.name, environment: 'development', publicClientId: `aw_public_${projectId.replaceAll('-', '')}`, previewUrl: previewUrl(projectId), productionUrl: `${publicBaseUrl()}/app/${projectId}`, createdAt: date, updatedAt: date, ...(database ? { database } : {}) }; const settings: ProjectSettings = { projectId, name: p.name, allowedOrigins: [], usageLimit: 10000, lifecycleStatus: 'active', environment: p.environment, updatedAt: date }; await store.commit(db => { db.projects.push(p); db.projectSettings.push(settings); }); await audit('project.created', p.id, uid, request.id); return reply.code(201).send(p);
   });
   app.get('/api/v1/projects/:projectId', async request => { const p = project(request); return { ...p, previewUrl: previewUrl(p.id) }; });
-   app.delete('/api/v1/projects/:projectId', async request => { const p = project(request); const uid = auth(request); await store.commit(db => { for (const value of Object.values(db) as unknown[]) if (Array.isArray(value)) { for (let i = value.length - 1; i >= 0; i--) if ((value[i] as any)?.projectId === p.id || (value[i] as any)?.id === p.id) value.splice(i, 1); } }); const { rm } = await import('node:fs/promises'); await rm(projectRoot(workspaceRoot, p.id), { recursive: true, force: true }); await audit('project.deleted', p.id, uid, request.id); return { deleted: p.id }; });
+  app.delete('/api/v1/projects/:projectId', async request => {
+    const p = project(request); const uid = auth(request);
+    if (p.database && projectDatabases) await projectDatabases.deprovision(p.database);
+    await store.commit(db => {
+      for (const key of ['projects', 'projectSettings', 'providerConfigs', 'products', 'surveyResponses', 'specs', 'deployments', 'builds', 'snapshots', 'projectMemory', 'decisions', 'buildHistory', 'graphNodes', 'graphEdges', 'aiBuildDrafts'] as const) {
+        const collection = (db as any)[key] as any[];
+        if (Array.isArray(collection)) (db as any)[key] = collection.filter(item => key === 'projects' ? item.id !== p.id : item.projectId !== p.id);
+      }
+      db.audits = db.audits.filter(item => item.projectId !== p.id);
+      db.userPreferences = db.userPreferences.map(item => item.selectedProjectId === p.id ? { ...item, selectedProjectId: null, updatedAt: now() } : item);
+    });
+    const { rm } = await import('node:fs/promises'); await rm(projectRoot(workspaceRoot, p.id), { recursive: true, force: true });
+    await audit('project.deleted', p.id, uid, request.id);
+    return { deleted: p.id };
+  });
   app.get('/api/v1/projects/:projectId/settings', async request => {
     const p = project(request); const existing = store.data.projectSettings.find(x => x.projectId === p.id);
     return existing ?? { projectId: p.id, name: p.name, allowedOrigins: [], usageLimit: 10000, lifecycleStatus: 'active', environment: p.environment, updatedAt: p.updatedAt };
